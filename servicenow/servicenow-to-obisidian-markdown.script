@@ -1,0 +1,247 @@
+// ==UserScript==
+// @name         ServiceNow KB → Obsidian Markdown Export (Clean Content)
+// @namespace    https://example.com/snow-kb-obsidian-clean
+// @version      1.2
+// @description  Export ServiceNow KB article to Obsidian Markdown using clean article body (no UI/scripts), with named links
+// @match        *://*/kb_view.do*
+// @match        *://*/kb_article.do*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    function getKbNumber() {
+        const el = document.getElementById('articleNumberReadonly');
+        if (el && el.textContent.trim()) {
+            return el.textContent.trim().split(/\s+/)[0]; // e.g. KB0011539
+        }
+        return null;
+    }
+
+    function getArticleTitle() {
+        const el = document.getElementById('articleTitleReadonly');
+        if (el && el.textContent.trim()) {
+            return el.textContent.trim();
+        }
+        return document.title || 'KB Article';
+    }
+
+    function makeSafeFilename(name) {
+        return name
+            .replace(/[\/\\?%*:|"<>]/g, '_')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .substring(0, 120);
+    }
+
+    function getArticleOriginalHtml() {
+        const el = document.getElementById('articleOriginal');
+        if (!el || !el.value) {
+            return '';
+        }
+        return el.value;
+    }
+
+    function parseArticleHtml(html) {
+        const parser = new DOMParser();
+        return parser.parseFromString(html, 'text/html');
+    }
+
+    function extractLinksFromDoc(doc) {
+        const anchors = Array.from(doc.querySelectorAll('a[href]'));
+
+        const kbLinks = [];
+        const incidentLinks = [];
+        const googleLinks = [];
+
+        for (const a of anchors) {
+            const href = a.getAttribute('href');
+            if (!href) continue;
+
+            const label = (a.textContent || '').trim() || href;
+
+            let url;
+            try {
+                url = new URL(href, window.location.origin);
+            } catch (e) {
+                continue;
+            }
+
+            const hrefStr = url.href;
+
+            // KB links
+            if (hrefStr.includes('kb_view.do') || hrefStr.includes('kb_article')) {
+                const kb = url.searchParams.get('sysparm_article');
+                if (kb && kb.startsWith('KB')) {
+                    kbLinks.push({ kb, label });
+                    continue;
+                }
+            }
+
+            // ServiceNow incidents / catalog / tasks
+            if (
+                hrefStr.includes('incident.do') ||
+                hrefStr.includes('sc_cat_item') ||
+                hrefStr.includes('task.do')
+            ) {
+                incidentLinks.push({ url: hrefStr, label });
+                continue;
+            }
+
+            // Google Docs
+            if (hrefStr.includes('docs.google.com')) {
+                googleLinks.push({ url: hrefStr, label });
+                continue;
+            }
+        }
+
+        return { kbLinks, incidentLinks, googleLinks };
+    }
+
+    function extractCleanTextFromDoc(doc) {
+        // Remove any scripts/styles just in case (articleOriginal should not have them, but be defensive)
+        const scripts = doc.querySelectorAll('script, style');
+        scripts.forEach(n => n.remove());
+
+        // Get readable text
+        const text = doc.body.innerText || '';
+        return text.trim();
+    }
+
+    function buildMarkdown(kbNumber, title, links, articleText) {
+        const lines = [];
+
+        // Frontmatter
+        lines.push('---');
+        lines.push(`title: ${title}`);
+        if (kbNumber) lines.push(`kb: ${kbNumber}`);
+        lines.push('source: ServiceNow');
+        lines.push('---');
+        lines.push('');
+
+        // Header
+        lines.push(`# ${title}`);
+        lines.push('');
+        if (kbNumber) {
+            lines.push(`**KB:** ${kbNumber}`);
+            lines.push('');
+        }
+
+        // KB links
+        lines.push('## Linked Knowledge Base Articles');
+        lines.push('');
+        if (links.kbLinks.length === 0) {
+            lines.push('_No linked KB articles found._');
+        } else {
+            const seen = new Set();
+            for (const l of links.kbLinks) {
+                const key = `${l.kb}|${l.label}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                lines.push(`- [[${l.kb}|${l.label}]]`);
+            }
+        }
+        lines.push('');
+
+        // ServiceNow links
+        lines.push('## Related Incidents / ServiceNow Records');
+        lines.push('');
+        if (links.incidentLinks.length === 0) {
+            lines.push('_No related incident or ServiceNow record links found._');
+        } else {
+            const seen = new Set();
+            for (const l of links.incidentLinks) {
+                if (seen.has(l.url)) continue;
+                seen.add(l.url);
+                lines.push(`- [${l.label}](${l.url})`);
+            }
+        }
+        lines.push('');
+
+        // Google Docs
+        lines.push('## Related Google Documents');
+        lines.push('');
+        if (links.googleLinks.length === 0) {
+            lines.push('_No Google Docs links found._');
+        } else {
+            const seen = new Set();
+            for (const l of links.googleLinks) {
+                if (seen.has(l.url)) continue;
+                seen.add(l.url);
+                lines.push(`- [${l.label}](${l.url})`);
+            }
+        }
+        lines.push('');
+
+        // Article content
+        lines.push('## Article Content');
+        lines.push('');
+        lines.push(articleText || '_No content extracted._');
+        lines.push('');
+
+        return lines.join('\n');
+    }
+
+    function downloadMarkdown(filename, content) {
+        const blob = new Blob([content], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+
+        URL.revokeObjectURL(url);
+    }
+
+    function addButton() {
+        if (document.getElementById('kb-export-obsidian-clean-btn')) return;
+
+        const btn = document.createElement('button');
+        btn.id = 'kb-export-obsidian-clean-btn';
+        btn.textContent = 'Export to Obsidian (Clean MD)';
+        btn.style.position = 'fixed';
+        btn.style.bottom = '20px';
+        btn.style.right = '20px';
+        btn.style.zIndex = 9999;
+        btn.style.padding = '8px 12px';
+        btn.style.fontSize = '12px';
+
+        btn.onclick = function () {
+            const kbNumber = getKbNumber();
+            const title = getArticleTitle();
+
+            const rawHtml = getArticleOriginalHtml();
+            if (!rawHtml) {
+                alert('Could not find articleOriginal content.');
+                return;
+            }
+
+            const doc = parseArticleHtml(rawHtml);
+
+            const links = extractLinksFromDoc(doc);
+            const articleText = extractCleanTextFromDoc(doc);
+
+            const md = buildMarkdown(kbNumber, title, links, articleText);
+
+            const baseName = makeSafeFilename(kbNumber || title);
+            const filename = `${baseName}.md`;
+
+            downloadMarkdown(filename, md);
+
+            alert(
+                `Exported clean Markdown:\n` +
+                `- ${links.kbLinks.length} KB links\n` +
+                `- ${links.incidentLinks.length} ServiceNow links\n` +
+                `- ${links.googleLinks.length} Google Docs links`
+            );
+        };
+
+        document.body.appendChild(btn);
+    }
+
+    // Wait a bit for ServiceNow to finish rendering
+    setTimeout(addButton, 3000);
+})();
+
