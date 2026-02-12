@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         ServiceNow KB Graph View
-// @namespace    https://example.com/snow-kb-graph
-// @version      1.0
+// @namespace    https://www.linkedin.com/in/joanmarcriera/
+// @version      1.1
 // @description  Obsidian-like graph visualization of linked ServiceNow Knowledge Base articles
+// @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_view.do*
 // @match        *://*/kb_article.do*
 // @require      https://d3js.org/d3.v7.min.js
@@ -14,6 +15,8 @@
 
     // ─── Constants ───────────────────────────────────────────────
     const MAX_NODES = 100;
+    const MIN_PANEL_W = 400;
+    const MIN_PANEL_H = 300;
     const COLORS = {
         central: '#7c3aed',
         regular: '#64748b',
@@ -26,8 +29,27 @@
         border: '#334155',
         textPrimary: '#e2e8f0',
         textSecondary: '#94a3b8',
+        duplicate: '#f59e0b',
     };
     const NODE_RADIUS = { central: 16, depth1: 10, depth2: 8, deep: 6 };
+
+    // ─── Helpers ─────────────────────────────────────────────────
+
+    function buildKbUrl(kbNumber) {
+        return `${window.location.origin}/kb_view.do?sysparm_article=${kbNumber}`;
+    }
+
+    function formatNodeLabel(id, title) {
+        const t = (!title || title === id) ? '' : title;
+        if (!t) return id;
+        const maxTitle = 30;
+        const truncated = t.length > maxTitle ? t.substring(0, maxTitle) + '...' : t;
+        return `${id} - ${truncated}`;
+    }
+
+    function clearChildren(el) {
+        while (el.firstChild) el.removeChild(el.firstChild);
+    }
 
     // ─── Data Extraction ─────────────────────────────────────────
 
@@ -149,7 +171,7 @@
 
         addNode(id, label, depth = 0) {
             if (this.nodes.has(id)) return this.nodes.get(id);
-            const node = { id, label, depth, expanded: false };
+            const node = { id, label, depth, expanded: false, titleFetched: false };
             this.nodes.set(id, node);
             return node;
         }
@@ -180,15 +202,15 @@
                 articleData = await promise;
             }
 
-            // Update label if we got a better title from the API
             if (articleData.title && articleData.title !== kbNumber) {
                 node.label = articleData.title;
+                node.titleFetched = true;
             }
 
             const kbLinks = extractKbLinks(articleData.html);
 
             for (const link of kbLinks) {
-                if (link.kb === kbNumber) continue; // skip self-links
+                if (link.kb === kbNumber) continue;
                 if (this.nodes.size >= MAX_NODES) break;
 
                 if (!this.nodes.has(link.kb)) {
@@ -203,6 +225,53 @@
             }
 
             return { newNodes, newLinks };
+        }
+
+        /** Batch-fetch titles for nodes that haven't been expanded yet */
+        async fetchTitlesForUnexpanded() {
+            const toFetch = [];
+            for (const [id, node] of this.nodes) {
+                if (!node.titleFetched && !node.expanded) {
+                    toFetch.push(id);
+                }
+            }
+            if (toFetch.length === 0) return [];
+
+            const updated = [];
+            const promises = toFetch.map(async (kbNumber) => {
+                try {
+                    let articleData;
+                    if (this.fetchCache.has(kbNumber)) {
+                        articleData = await this.fetchCache.get(kbNumber);
+                    } else {
+                        const promise = fetchWithRetry(kbNumber);
+                        this.fetchCache.set(kbNumber, promise);
+                        articleData = await promise;
+                    }
+                    const node = this.nodes.get(kbNumber);
+                    if (node && articleData.title && articleData.title !== kbNumber) {
+                        node.label = articleData.title;
+                        node.titleFetched = true;
+                        updated.push(kbNumber);
+                    }
+                } catch (e) {
+                    console.warn(`KB Graph: could not fetch title for ${kbNumber}`, e.message);
+                }
+            });
+
+            await Promise.allSettled(promises);
+            return updated;
+        }
+
+        /** Get neighbors of a node */
+        getNeighbors(nodeId) {
+            const neighbors = [];
+            for (const key of this.links) {
+                const [a, b] = key.split('|');
+                if (a === nodeId) neighbors.push(b);
+                else if (b === nodeId) neighbors.push(a);
+            }
+            return neighbors;
         }
 
         getNodesArray() {
@@ -266,9 +335,10 @@
                 .on('tick', () => this._tick());
         }
 
-        render(nodes, links, onExpand, onSelect) {
+        render(nodes, links, onExpand, onSelect, onOpen) {
             this.onExpand = onExpand;
             this.onSelect = onSelect;
+            this.onOpen = onOpen;
             this._update(nodes, links);
             this.simulation.nodes(nodes);
             this.simulation.force('link').links(links);
@@ -282,10 +352,38 @@
             this.simulation.alpha(0.3).restart();
         }
 
+        updateLabels() {
+            this.labelGroup.selectAll('text')
+                .text(d => formatNodeLabel(d.id, d.label));
+        }
+
+        resize(w, h) {
+            this.width = w;
+            this.height = h;
+            if (this.simulation) {
+                this.simulation.force('center', d3.forceCenter(w / 2, h / 2));
+                this.simulation.alpha(0.1).restart();
+            }
+        }
+
+        show() {
+            if (this.svg) this.svg.style('display', null);
+            if (this.simulation) this.simulation.alpha(0.05).restart();
+        }
+
+        hide() {
+            if (this.svg) this.svg.style('display', 'none');
+            if (this.simulation) this.simulation.stop();
+        }
+
         fitToView() {
             const g = this.svg.select('.graph-root');
             const bounds = g.node().getBBox();
             if (bounds.width === 0 || bounds.height === 0) return;
+
+            const rect = this.container.getBoundingClientRect();
+            this.width = rect.width;
+            this.height = rect.height;
 
             const scale = 0.85 / Math.max(bounds.width / this.width, bounds.height / this.height);
             const tx = this.width / 2 - scale * (bounds.x + bounds.width / 2);
@@ -353,6 +451,11 @@
                     event.stopPropagation();
                     if (self.onExpand) self.onExpand(d);
                 })
+                .on('contextmenu', function (event, d) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (self.onOpen) self.onOpen(d);
+                })
                 .call(d3.drag()
                     .on('start', (event, d) => {
                         if (!event.active) self.simulation.alphaTarget(0.3).restart();
@@ -369,12 +472,10 @@
                         d.fy = null;
                     }));
 
-            // Animate new nodes in
             nodeEnter.attr('r', 0)
                 .transition().duration(300)
                 .attr('r', d => self._nodeRadius(d));
 
-            // Update existing node colors (for expanded state)
             nodeSel.attr('fill', d => self._nodeColor(d));
 
             // Labels
@@ -386,16 +487,9 @@
                 .attr('font-size', d => d.id === self.centralId ? '12px' : '10px')
                 .attr('fill', COLORS.textPrimary)
                 .attr('pointer-events', 'none')
-                .text(d => {
-                    const maxLen = d.id === self.centralId ? 40 : 25;
-                    return d.label.length > maxLen ? d.label.substring(0, maxLen) + '...' : d.label;
-                });
+                .text(d => formatNodeLabel(d.id, d.label));
 
-            // Update label text for nodes that got better titles
-            labelSel.text(d => {
-                const maxLen = d.id === self.centralId ? 40 : 25;
-                return d.label.length > maxLen ? d.label.substring(0, maxLen) + '...' : d.label;
-            });
+            labelSel.text(d => formatNodeLabel(d.id, d.label));
         }
 
         _highlightLinks(nodeId, highlight) {
@@ -437,6 +531,206 @@
         }
     }
 
+    // ─── Tree Renderer ───────────────────────────────────────────
+
+    class TreeRenderer {
+        constructor(container) {
+            this.container = container;
+            this.treeDiv = null;
+            this.collapsedNodes = new Set();
+            this.centralId = null;
+            this.onExpand = null;
+            this.onOpen = null;
+        }
+
+        initialize() {
+            this.treeDiv = document.createElement('div');
+            this.treeDiv.id = 'kb-graph-tree';
+            Object.assign(this.treeDiv.style, {
+                display: 'none',
+                width: '100%',
+                height: '100%',
+                overflowY: 'auto',
+                overflowX: 'auto',
+                background: COLORS.bgPrimary,
+                padding: '12px',
+                boxSizing: 'border-box',
+                fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                fontSize: '13px',
+                color: COLORS.textPrimary,
+            });
+            this.container.appendChild(this.treeDiv);
+        }
+
+        show() { if (this.treeDiv) this.treeDiv.style.display = 'block'; }
+        hide() { if (this.treeDiv) this.treeDiv.style.display = 'none'; }
+
+        setCentralId(id) { this.centralId = id; }
+
+        render(graphModel, centralId) {
+            if (!this.treeDiv) return;
+            if (centralId) this.centralId = centralId;
+            clearChildren(this.treeDiv);
+
+            const visited = new Map();
+            this._renderNode(graphModel, this.centralId, 0, visited, [], this.treeDiv);
+        }
+
+        _renderNode(model, nodeId, depth, visited, parentPath, parentEl) {
+            const node = model.nodes.get(nodeId);
+            if (!node) return;
+
+            const row = document.createElement('div');
+            Object.assign(row.style, {
+                paddingLeft: (depth * 24 + 4) + 'px',
+                paddingTop: '4px',
+                paddingBottom: '4px',
+                paddingRight: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                borderRadius: '4px',
+                cursor: 'default',
+            });
+            row.onmouseover = () => { row.style.background = 'rgba(255,255,255,0.05)'; };
+            row.onmouseout = () => { row.style.background = 'transparent'; };
+
+            const isDuplicate = visited.has(nodeId);
+            const prevParents = visited.get(nodeId) || [];
+            if (!isDuplicate) {
+                visited.set(nodeId, [...parentPath]);
+            }
+
+            const neighbors = model.getNeighbors(nodeId);
+            const childNodes = neighbors.filter(n => !parentPath.includes(n) && n !== nodeId);
+            const hasChildren = node.expanded && childNodes.length > 0;
+            const isCollapsed = this.collapsedNodes.has(nodeId);
+            const self = this;
+
+            // Toggle arrow
+            const toggle = document.createElement('span');
+            Object.assign(toggle.style, {
+                width: '16px',
+                display: 'inline-block',
+                textAlign: 'center',
+                cursor: 'pointer',
+                userSelect: 'none',
+                fontSize: '10px',
+                color: COLORS.textSecondary,
+            });
+
+            if (isDuplicate) {
+                toggle.textContent = '\u21a9';
+                toggle.title = 'Duplicate \u2014 already shown above';
+            } else if (hasChildren) {
+                toggle.textContent = isCollapsed ? '\u25b6' : '\u25bc';
+                toggle.onclick = function (e) {
+                    e.stopPropagation();
+                    if (isCollapsed) {
+                        self.collapsedNodes.delete(nodeId);
+                    } else {
+                        self.collapsedNodes.add(nodeId);
+                    }
+                    self.render(model, self.centralId);
+                };
+            } else if (!node.expanded && !isDuplicate) {
+                toggle.textContent = '\u25b6';
+                toggle.style.opacity = '0.5';
+                toggle.title = 'Double-click to load links';
+                toggle.ondblclick = function (e) {
+                    e.stopPropagation();
+                    if (self.onExpand) self.onExpand(node);
+                };
+            } else {
+                toggle.textContent = '\u00b7';
+            }
+            row.appendChild(toggle);
+
+            // Color dot
+            const dot = document.createElement('span');
+            Object.assign(dot.style, {
+                width: '8px',
+                height: '8px',
+                borderRadius: '50%',
+                display: 'inline-block',
+                flexShrink: '0',
+            });
+            if (isDuplicate) {
+                dot.style.background = COLORS.duplicate;
+            } else if (depth === 0) {
+                dot.style.background = COLORS.central;
+            } else if (node.expanded) {
+                dot.style.background = COLORS.expanded;
+            } else {
+                dot.style.background = COLORS.regular;
+            }
+            row.appendChild(dot);
+
+            // Label text
+            const label = document.createElement('span');
+            Object.assign(label.style, {
+                flex: '1',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+            });
+            label.textContent = node.id + ' - ' + (node.label !== node.id ? node.label : '...');
+            if (isDuplicate) {
+                label.style.fontStyle = 'italic';
+                label.style.opacity = '0.7';
+            }
+            row.appendChild(label);
+
+            // Duplicate badge
+            if (isDuplicate && prevParents.length > 0) {
+                const badge = document.createElement('span');
+                Object.assign(badge.style, {
+                    fontSize: '10px',
+                    background: COLORS.duplicate,
+                    color: '#000',
+                    padding: '1px 6px',
+                    borderRadius: '8px',
+                    whiteSpace: 'nowrap',
+                    flexShrink: '0',
+                });
+                const fromKb = prevParents[prevParents.length - 1] || '?';
+                badge.textContent = 'also from ' + fromKb;
+                row.appendChild(badge);
+            }
+
+            // Open link icon
+            const openLink = document.createElement('a');
+            openLink.href = buildKbUrl(nodeId);
+            openLink.target = '_blank';
+            openLink.rel = 'noopener';
+            openLink.textContent = '\u2197';
+            Object.assign(openLink.style, {
+                color: COLORS.textSecondary,
+                textDecoration: 'none',
+                fontSize: '14px',
+                flexShrink: '0',
+                padding: '0 2px',
+            });
+            openLink.onmouseover = function () { openLink.style.color = COLORS.textPrimary; };
+            openLink.onmouseout = function () { openLink.style.color = COLORS.textSecondary; };
+            openLink.title = 'Open ' + nodeId + ' in new tab';
+            row.appendChild(openLink);
+
+            parentEl.appendChild(row);
+
+            // Don't recurse for duplicates
+            if (isDuplicate) return;
+
+            // Recurse children
+            if (hasChildren && !isCollapsed) {
+                const currentPath = [...parentPath, nodeId];
+                for (const childId of childNodes) {
+                    this._renderNode(model, childId, depth + 1, visited, currentPath, parentEl);
+                }
+            }
+        }
+    }
+
     // ─── Floating Panel UI ───────────────────────────────────────
 
     function createPanel() {
@@ -456,9 +750,8 @@
             position: 'absolute',
             top: '10vh', left: '10vw',
             width: '80vw', height: '80vh',
-            maxWidth: '1200px', maxHeight: '800px',
             background: COLORS.bgPrimary,
-            border: `1px solid ${COLORS.border}`,
+            border: '1px solid ' + COLORS.border,
             borderRadius: '8px',
             boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
             display: 'flex',
@@ -473,7 +766,7 @@
             background: COLORS.bgSecondary,
             color: COLORS.textPrimary,
             padding: '10px 16px',
-            borderBottom: `1px solid ${COLORS.border}`,
+            borderBottom: '1px solid ' + COLORS.border,
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
@@ -499,11 +792,32 @@
             padding: '0',
             lineHeight: '1',
         });
-        closeBtn.onmouseover = () => closeBtn.style.color = COLORS.textPrimary;
-        closeBtn.onmouseout = () => closeBtn.style.color = COLORS.textSecondary;
-        closeBtn.onclick = () => hidePanel();
+        closeBtn.onmouseover = function () { closeBtn.style.color = COLORS.textPrimary; };
+        closeBtn.onmouseout = function () { closeBtn.style.color = COLORS.textSecondary; };
+        closeBtn.onclick = function () { hidePanel(); };
 
-        titleBar.appendChild(titleText);
+        const authorLink = document.createElement('a');
+        authorLink.href = 'https://www.linkedin.com/in/joanmarcriera/';
+        authorLink.target = '_blank';
+        authorLink.rel = 'noopener';
+        authorLink.textContent = 'by Joan Marc Riera';
+        Object.assign(authorLink.style, {
+            color: COLORS.textSecondary,
+            fontSize: '11px',
+            textDecoration: 'none',
+            marginLeft: '10px',
+        });
+        authorLink.onmouseover = function () { authorLink.style.color = COLORS.hover; };
+        authorLink.onmouseout = function () { authorLink.style.color = COLORS.textSecondary; };
+
+        const titleLeft = document.createElement('div');
+        titleLeft.style.display = 'flex';
+        titleLeft.style.alignItems = 'baseline';
+        titleLeft.style.gap = '4px';
+        titleLeft.appendChild(titleText);
+        titleLeft.appendChild(authorLink);
+
+        titleBar.appendChild(titleLeft);
         titleBar.appendChild(closeBtn);
 
         // Graph container
@@ -530,20 +844,20 @@
         const spinner = document.createElement('div');
         Object.assign(spinner.style, {
             width: '40px', height: '40px',
-            border: `3px solid ${COLORS.border}`,
-            borderTop: `3px solid ${COLORS.central}`,
+            border: '3px solid ' + COLORS.border,
+            borderTop: '3px solid ' + COLORS.central,
             borderRadius: '50%',
             animation: 'kb-graph-spin 1s linear infinite',
         });
         loading.appendChild(spinner);
         graphContainer.appendChild(loading);
 
-        // Footer / controls
+        // Footer
         const footer = document.createElement('div');
         footer.id = 'kb-graph-footer';
         Object.assign(footer.style, {
             background: COLORS.bgSecondary,
-            borderTop: `1px solid ${COLORS.border}`,
+            borderTop: '1px solid ' + COLORS.border,
             padding: '8px 12px',
             display: 'flex',
             justifyContent: 'space-between',
@@ -551,29 +865,44 @@
             flexShrink: '0',
             fontSize: '12px',
             color: COLORS.textSecondary,
+            gap: '8px',
         });
 
-        const infoText = document.createElement('span');
-        infoText.id = 'kb-graph-info';
-        infoText.textContent = 'Double-click a node to expand';
+        // Footer left: info area
+        const infoArea = document.createElement('div');
+        infoArea.id = 'kb-graph-info';
+        Object.assign(infoArea.style, {
+            flex: '1',
+            overflow: 'hidden',
+            whiteSpace: 'nowrap',
+            textOverflow: 'ellipsis',
+        });
+        infoArea.textContent = 'Double-click a node to expand \u2022 Right-click to open';
 
+        // Footer right: controls
         const controlsRight = document.createElement('div');
         controlsRight.style.display = 'flex';
         controlsRight.style.gap = '6px';
+        controlsRight.style.flexShrink = '0';
 
-        const makeBtnStyle = (btn) => {
+        const makeBtnStyle = function (btn) {
             Object.assign(btn.style, {
                 background: COLORS.bgPrimary,
-                border: `1px solid ${COLORS.border}`,
+                border: '1px solid ' + COLORS.border,
                 color: COLORS.textPrimary,
                 padding: '4px 10px',
                 borderRadius: '4px',
                 fontSize: '11px',
                 cursor: 'pointer',
             });
-            btn.onmouseover = () => btn.style.background = COLORS.border;
-            btn.onmouseout = () => btn.style.background = COLORS.bgPrimary;
+            btn.onmouseover = function () { btn.style.background = COLORS.border; };
+            btn.onmouseout = function () { btn.style.background = COLORS.bgPrimary; };
         };
+
+        const viewToggleBtn = document.createElement('button');
+        viewToggleBtn.id = 'kb-graph-view-toggle';
+        viewToggleBtn.textContent = 'Tree View';
+        makeBtnStyle(viewToggleBtn);
 
         const fitBtn = document.createElement('button');
         fitBtn.textContent = 'Fit to View';
@@ -585,44 +914,103 @@
         resetBtn.id = 'kb-graph-reset-btn';
         makeBtnStyle(resetBtn);
 
+        controlsRight.appendChild(viewToggleBtn);
         controlsRight.appendChild(fitBtn);
         controlsRight.appendChild(resetBtn);
-        footer.appendChild(infoText);
+        footer.appendChild(infoArea);
         footer.appendChild(controlsRight);
 
         panel.appendChild(titleBar);
         panel.appendChild(graphContainer);
         panel.appendChild(footer);
+
+        // Resize handle (bottom-right corner)
+        const resizeHandle = document.createElement('div');
+        Object.assign(resizeHandle.style, {
+            position: 'absolute',
+            bottom: '0', right: '0',
+            width: '16px', height: '16px',
+            cursor: 'nwse-resize',
+            zIndex: '20',
+        });
+        const grip = document.createElement('div');
+        Object.assign(grip.style, {
+            position: 'absolute',
+            bottom: '3px', right: '3px',
+            width: '10px', height: '10px',
+            borderRight: '2px solid ' + COLORS.textSecondary,
+            borderBottom: '2px solid ' + COLORS.textSecondary,
+            opacity: '0.5',
+        });
+        resizeHandle.appendChild(grip);
+        panel.appendChild(resizeHandle);
+
         overlay.appendChild(panel);
 
-        // Inject spin animation
+        // Inject keyframe animation
         const style = document.createElement('style');
-        style.textContent = '@keyframes kb-graph-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }';
+        style.textContent = [
+            '@keyframes kb-graph-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }',
+            '#kb-graph-info a { color: ' + COLORS.hover + '; text-decoration: none; }',
+            '#kb-graph-info a:hover { text-decoration: underline; color: ' + COLORS.textPrimary + '; }',
+        ].join('\n');
         document.head.appendChild(style);
 
-        // Make panel draggable
+        // Draggable title bar
         let isDragging = false, dragOffX = 0, dragOffY = 0;
-        titleBar.addEventListener('mousedown', (e) => {
+        titleBar.addEventListener('mousedown', function (e) {
             isDragging = true;
             const rect = panel.getBoundingClientRect();
             dragOffX = e.clientX - rect.left;
             dragOffY = e.clientY - rect.top;
             e.preventDefault();
         });
-        document.addEventListener('mousemove', (e) => {
+        document.addEventListener('mousemove', function (e) {
             if (!isDragging) return;
             panel.style.left = (e.clientX - dragOffX) + 'px';
             panel.style.top = (e.clientY - dragOffY) + 'px';
         });
-        document.addEventListener('mouseup', () => { isDragging = false; });
+        document.addEventListener('mouseup', function () { isDragging = false; });
 
-        // Close on overlay click (outside panel)
-        overlay.addEventListener('click', (e) => {
+        // Resizable via corner handle
+        let isResizing = false, resizeStartX = 0, resizeStartY = 0, startW = 0, startH = 0;
+        resizeHandle.addEventListener('mousedown', function (e) {
+            isResizing = true;
+            resizeStartX = e.clientX;
+            resizeStartY = e.clientY;
+            const rect = panel.getBoundingClientRect();
+            startW = rect.width;
+            startH = rect.height;
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        document.addEventListener('mousemove', function (e) {
+            if (!isResizing) return;
+            const newW = Math.max(MIN_PANEL_W, startW + (e.clientX - resizeStartX));
+            const newH = Math.max(MIN_PANEL_H, startH + (e.clientY - resizeStartY));
+            panel.style.width = newW + 'px';
+            panel.style.height = newH + 'px';
+        });
+        document.addEventListener('mouseup', function () {
+            if (isResizing) {
+                isResizing = false;
+                if (renderer) {
+                    const rect = graphContainer.getBoundingClientRect();
+                    renderer.resize(rect.width, rect.height);
+                }
+            }
+        });
+
+        // Close on overlay background click
+        overlay.addEventListener('click', function (e) {
             if (e.target === overlay) hidePanel();
         });
 
         document.body.appendChild(overlay);
-        return { overlay, panel, graphContainer, loading, titleText, infoText, fitBtn, resetBtn };
+        return {
+            overlay, panel, graphContainer, loading, titleText, infoArea,
+            fitBtn, resetBtn, viewToggleBtn,
+        };
     }
 
     // ─── State ───────────────────────────────────────────────────
@@ -630,7 +1018,10 @@
     let panelElements = null;
     let graphModel = null;
     let renderer = null;
+    let treeRenderer = null;
     let initialized = false;
+    let currentView = 'graph';
+    let selectedNode = null;
 
     function showPanel() {
         if (!panelElements) panelElements = createPanel();
@@ -646,15 +1037,59 @@
         panelElements.loading.style.display = on ? 'flex' : 'none';
     }
 
-    function updateInfo(text) {
-        if (panelElements) panelElements.infoText.textContent = text;
+    function updateInfo(text, linkNode) {
+        if (!panelElements) return;
+        const area = panelElements.infoArea;
+        clearChildren(area);
+
+        if (linkNode) {
+            const a = document.createElement('a');
+            a.href = buildKbUrl(linkNode.id);
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.textContent = linkNode.id + ' - ' + linkNode.label;
+            a.title = 'Click to open in new tab';
+            area.appendChild(a);
+
+            if (linkNode.expanded) {
+                area.appendChild(document.createTextNode(' (expanded)'));
+            }
+        } else {
+            area.textContent = text;
+        }
     }
 
     function updateNodeCount() {
-        if (!graphModel) return;
+        if (!graphModel || selectedNode) return;
         const count = graphModel.nodes.size;
         const linkCount = graphModel.links.size;
-        updateInfo(`${count} nodes, ${linkCount} links \u2022 Double-click to expand`);
+        updateInfo(count + ' nodes, ' + linkCount + ' links \u2022 Dbl-click expand \u2022 Right-click open');
+    }
+
+    // ─── View Toggle ─────────────────────────────────────────────
+
+    function switchView(view) {
+        currentView = view;
+        if (!panelElements) return;
+
+        const btn = panelElements.viewToggleBtn;
+        const fitBtn = panelElements.fitBtn;
+        const resetBtn = panelElements.resetBtn;
+
+        if (view === 'tree') {
+            btn.textContent = 'Graph View';
+            renderer.hide();
+            treeRenderer.show();
+            treeRenderer.render(graphModel, graphModel.getNodesArray()[0]?.id);
+            fitBtn.style.display = 'none';
+            resetBtn.style.display = 'none';
+        } else {
+            btn.textContent = 'Tree View';
+            treeRenderer.hide();
+            renderer.show();
+            fitBtn.style.display = '';
+            resetBtn.style.display = '';
+        }
     }
 
     // ─── Orchestration ───────────────────────────────────────────
@@ -668,10 +1103,11 @@
             return;
         }
 
-        panelElements.titleText.textContent = `KB Graph View \u2014 ${kbNumber}`;
+        panelElements.titleText.textContent = 'KB Graph View \u2014 ' + kbNumber;
 
         graphModel = new GraphModel();
         graphModel.addNode(kbNumber, title, 0);
+        graphModel.nodes.get(kbNumber).titleFetched = true;
 
         // Extract links from current page
         const rawHtml = getArticleOriginalHtml();
@@ -685,58 +1121,96 @@
             graphModel.nodes.get(kbNumber).expanded = true;
         }
 
-        // Initialize renderer
+        // Initialize renderers
         renderer = new GraphRenderer(panelElements.graphContainer, kbNumber);
         renderer.initialize();
 
-        // Wire up controls
-        panelElements.fitBtn.onclick = () => renderer.fitToView();
-        panelElements.resetBtn.onclick = () => renderer.resetZoom();
+        treeRenderer = new TreeRenderer(panelElements.graphContainer);
+        treeRenderer.initialize();
+        treeRenderer.setCentralId(kbNumber);
+        treeRenderer.onExpand = handleExpand;
+        treeRenderer.onOpen = handleOpen;
 
-        // Render
+        // Wire up controls
+        panelElements.fitBtn.onclick = function () { renderer.fitToView(); };
+        panelElements.resetBtn.onclick = function () { renderer.resetZoom(); };
+        panelElements.viewToggleBtn.onclick = function () {
+            switchView(currentView === 'graph' ? 'tree' : 'graph');
+        };
+
+        // Render graph
         renderer.render(
             graphModel.getNodesArray(),
             graphModel.getLinksArray(),
             handleExpand,
-            handleSelect
+            handleSelect,
+            handleOpen
         );
 
         updateNodeCount();
         initialized = true;
 
-        // Auto fit after simulation settles a bit
-        setTimeout(() => renderer.fitToView(), 1500);
+        // Auto fit after simulation settles
+        setTimeout(function () { renderer.fitToView(); }, 1500);
+
+        // Batch-fetch titles for depth-1 nodes in background
+        graphModel.fetchTitlesForUnexpanded().then(function (updated) {
+            if (updated.length > 0) {
+                renderer.updateLabels();
+                if (currentView === 'tree') {
+                    treeRenderer.render(graphModel, kbNumber);
+                }
+            }
+        });
     }
 
     async function handleExpand(node) {
         if (node.expanded) {
-            updateInfo(`${node.id} is already expanded`);
+            updateInfo(node.id + ' is already expanded');
             return;
         }
 
         setLoading(true);
-        updateInfo(`Loading ${node.id}...`);
+        updateInfo('Loading ' + node.id + '...');
 
         try {
-            const { newNodes, newLinks } = await graphModel.expandNode(node.id);
+            const result = await graphModel.expandNode(node.id);
 
-            if (newNodes.length === 0 && newLinks.length === 0) {
-                updateInfo(`${node.id} has no linked KB articles`);
+            if (result.newNodes.length === 0 && result.newLinks.length === 0) {
+                updateInfo(node.id + ' has no linked KB articles');
             } else {
                 renderer.addIncremental(
                     graphModel.getNodesArray(),
                     graphModel.getLinksArray()
                 );
+                selectedNode = null;
                 updateNodeCount();
+
+                // Fetch titles for new nodes in background
+                graphModel.fetchTitlesForUnexpanded().then(function (updated) {
+                    if (updated.length > 0) {
+                        renderer.updateLabels();
+                        if (currentView === 'tree') {
+                            const centralId = graphModel.getNodesArray()[0]?.id;
+                            treeRenderer.render(graphModel, centralId);
+                        }
+                    }
+                });
+            }
+
+            // Refresh tree if active
+            if (currentView === 'tree') {
+                const centralId = graphModel.getNodesArray()[0]?.id;
+                treeRenderer.render(graphModel, centralId);
             }
         } catch (e) {
             if (e.status === 401 || e.status === 403) {
                 updateInfo('Session expired or access denied. Refresh the page.');
             } else if (e.status === 404) {
-                updateInfo(`${node.id} not found or not accessible`);
-                node.expanded = true; // mark to prevent re-trying
+                updateInfo(node.id + ' not found or not accessible');
+                node.expanded = true;
             } else {
-                updateInfo(`Error loading ${node.id}: ${e.message}`);
+                updateInfo('Error loading ' + node.id + ': ' + e.message);
             }
             console.error('KB Graph expand error:', e);
         } finally {
@@ -745,7 +1219,12 @@
     }
 
     function handleSelect(node) {
-        updateInfo(`${node.id}: ${node.label}${node.expanded ? ' (expanded)' : ''}`);
+        selectedNode = node;
+        updateInfo(null, node);
+    }
+
+    function handleOpen(node) {
+        window.open(buildKbUrl(node.id), '_blank');
     }
 
     // ─── Toggle Button ───────────────────────────────────────────
@@ -774,18 +1253,18 @@
             transition: 'all 0.2s',
         });
 
-        btn.onmouseover = () => {
+        btn.onmouseover = function () {
             btn.style.background = COLORS.hover;
             btn.style.transform = 'translateY(-2px)';
             btn.style.boxShadow = '0 4px 8px rgba(0,0,0,0.3)';
         };
-        btn.onmouseout = () => {
+        btn.onmouseout = function () {
             btn.style.background = COLORS.central;
             btn.style.transform = 'translateY(0)';
             btn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
         };
 
-        btn.onclick = async () => {
+        btn.onclick = async function () {
             showPanel();
             if (!initialized) {
                 setLoading(true);
