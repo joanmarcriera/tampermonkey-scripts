@@ -10,7 +10,8 @@ A collection of [Tampermonkey](https://www.tampermonkey.net/) userscripts that e
 
 | Script | Description | Version |
 |--------|-------------|---------|
-| [KB Graph View](#-kb-graph-view) | Obsidian-like interactive graph of linked KB articles | 1.1 |
+| [KB Graph View](#-kb-graph-view) | Obsidian-like interactive graph of linked KB articles | 1.2 |
+| [KB Reverse Links](#-kb-reverse-links) | Show which KB articles and tasks reference the current article | 1.0 |
 | [KB Obsidian Export](#-kb-obsidian-export) | Export KB articles to Obsidian-flavoured Markdown | 1.2 |
 
 ---
@@ -48,6 +49,7 @@ A collection of [Tampermonkey](https://www.tampermonkey.net/) userscripts that e
 Click the raw file link for each script below. Tampermonkey will detect it and offer to install:
 
 - [`servicenow-kb-graph-view.user.js`](servicenow/servicenow-kb-graph-view.user.js)
+- [`servicenow-kb-reverse-links.user.js`](servicenow/servicenow-kb-reverse-links.user.js)
 - [`servicenow-to-obisidian-markdown.script`](servicenow/servicenow-to-obisidian-markdown.script)
 
 > **Note:** For the direct-install to work the file must have a `.user.js` extension and be served as raw content.
@@ -99,6 +101,38 @@ An interactive, Obsidian-style graph visualisation that shows how ServiceNow Kno
 
 ---
 
+### KB Reverse Links
+
+**File:** [`servicenow/servicenow-kb-reverse-links.user.js`](servicenow/servicenow-kb-reverse-links.user.js)
+
+Shows which other KB articles and tasks (incidents, catalog tasks, etc.) reference the currently viewed KB article &mdash; the "incoming links" complement to the Graph View's outgoing links.
+
+#### Features
+
+- **Reverse KB references** &mdash; queries the `kb_2_kb` relationship table to find KB articles that link to the current one
+- **Task references** &mdash; queries the `m2m_kb_task` table to find incidents, catalog tasks, change requests, and other tasks that reference this article
+- **Auto schema discovery** &mdash; automatically detects the field names on `kb_2_kb` (which vary by ServiceNow instance) via a one-time discovery query
+- **Clickable results** &mdash; click any row or the &nearr; icon to open the referenced article or task in a new tab
+- **Task type badges** &mdash; each task shows its type (Incident, Catalog Task, Change, etc.)
+- **Graceful error handling** &mdash; each section loads independently, so if one table is inaccessible the other still works
+- **Refresh button** &mdash; re-fetch the latest reverse links without reloading the page
+
+#### How it works
+
+1. Navigate to any ServiceNow KB article (`kb_view.do`, `kb_article.do`, or `esc?id=kb_article`).
+2. A sky-blue **"Reverse Links"** button appears in the bottom-right corner (after ~3s).
+3. Click it to open the reverse links panel.
+4. The script resolves the article's `sys_id`, then queries both relationship tables in parallel.
+5. Results are displayed in two sections: **KB Articles** (purple dots) and **Tasks** (amber dots).
+
+#### Requirements
+
+- ServiceNow Table API access to `kb_knowledge`, `kb_2_kb`, and `m2m_kb_task` tables.
+- If `kb_2_kb` is not accessible, the KB references section will show an error message while the tasks section still works (and vice versa).
+- Uses your existing browser session (`window.g_ck` token) for authentication.
+
+---
+
 ### KB Obsidian Export
 
 **File:** [`servicenow/servicenow-to-obisidian-markdown.script`](servicenow/servicenow-to-obisidian-markdown.script)
@@ -126,7 +160,7 @@ Exports the current ServiceNow KB article as a clean Markdown file ready for [Ob
 |---------|----------|
 | Buttons don't appear | Wait a few seconds for ServiceNow to finish rendering. Check that Tampermonkey is enabled and the script is active for the current URL. |
 | "Session expired" error | Refresh the ServiceNow page to get a new session token, then reopen the graph. |
-| API errors (403/404) | Ensure your ServiceNow role has read access to the `kb_knowledge` table. |
+| API errors (403/404) | Ensure your ServiceNow role has read access to `kb_knowledge`. For reverse links, you also need access to `kb_2_kb` and `m2m_kb_task`. |
 | Graph is empty | The article may not contain links to other KB articles. Check the article body for `<a>` tags pointing to `kb_view.do` or `kb_article`. |
 
 ---
