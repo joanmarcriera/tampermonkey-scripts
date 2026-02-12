@@ -13,6 +13,8 @@ A collection of [Tampermonkey](https://www.tampermonkey.net/) userscripts that e
 | [KB Graph View](#-kb-graph-view) | Obsidian-like interactive graph of linked KB articles | 1.2 |
 | [KB Reverse Links](#-kb-reverse-links) | Show which KB articles and tasks reference the current article | 1.0 |
 | [KB Obsidian Export](#-kb-obsidian-export) | Export KB articles to Obsidian-flavoured Markdown | 1.2 |
+| [KB Health Badge](#-kb-health-badge) | Show a quick freshness/ownership health badge for the current article | 1.0 |
+| [KB Link Linter](#-kb-link-linter) | Detect malformed, duplicate, and dead KB links in the current article | 1.0 |
 
 ---
 
@@ -51,6 +53,8 @@ Click the raw file link for each script below. Tampermonkey will detect it and o
 - [`servicenow-kb-graph-view.user.js`](servicenow/servicenow-kb-graph-view.user.js)
 - [`servicenow-kb-reverse-links.user.js`](servicenow/servicenow-kb-reverse-links.user.js)
 - [`servicenow-to-obisidian-markdown.script`](servicenow/servicenow-to-obisidian-markdown.script)
+- [`servicenow-kb-health-badge.user.js`](servicenow/servicenow-kb-health-badge.user.js)
+- [`servicenow-kb-link-linter.user.js`](servicenow/servicenow-kb-link-linter.user.js)
 
 > **Note:** For the direct-install to work the file must have a `.user.js` extension and be served as raw content.
 
@@ -151,6 +155,68 @@ Exports the current ServiceNow KB article as a clean Markdown file ready for [Ob
 1. Navigate to any ServiceNow KB article.
 2. An **"Export to Obsidian (Clean MD)"** button appears in the bottom-right corner.
 3. Click it to download the Markdown file.
+
+---
+
+### KB Health Badge
+
+**File:** [`servicenow/servicenow-kb-health-badge.user.js`](servicenow/servicenow-kb-health-badge.user.js)
+
+Displays a compact health card in the top-right corner of KB article pages with a clear status:
+**Fresh**, **Review Soon**, **Stale**, or **Unknown**.
+
+#### Features
+
+- Computes health based on article age and workflow state
+- Shows owner, last modified information, version, and state at a glance
+- Works on standard KB pages and ESC KB article view
+- Auto-refreshes periodically so relative timestamps stay current
+
+#### How it works
+
+1. Navigate to any ServiceNow KB article (`kb_view.do`, `kb_article.do`, or `esc?id=kb_article`).
+2. A **KB Health** card appears in the top-right corner.
+3. Status thresholds:
+   - **Fresh**: last update within 90 days
+   - **Review Soon**: 91-180 days old, or non-published working states
+   - **Stale**: older than 180 days, or retired/pending retirement states
+
+#### Requirements
+
+- No extra API permissions needed; the script reads existing KB page metadata already rendered in the page.
+
+---
+
+### KB Link Linter
+
+**File:** [`servicenow/servicenow-kb-link-linter.user.js`](servicenow/servicenow-kb-link-linter.user.js)
+
+Analyzes links in the current KB article and reports link-quality issues before they become support problems.
+
+#### Features
+
+- Detects malformed KB links (e.g. missing/invalid `sysparm_article=KB...`)
+- Finds duplicate KB targets (same KB linked multiple times)
+- Finds duplicate URLs in the article body
+- Validates KB targets against `kb_knowledge` and flags dead links
+- Highlights links pointing to retired/pending-retirement KB articles
+
+#### How it works
+
+1. Navigate to any ServiceNow KB article (`kb_view.do`, `kb_article.do`, or `esc?id=kb_article`).
+2. Click the orange **"KB Link Linter"** button in the bottom-left corner.
+3. Review the report sections:
+   - **Malformed KB Links**
+   - **Duplicate KB Targets**
+   - **Duplicate URLs**
+   - **Dead KB Targets**
+   - **Retired Targets**
+4. Use **Refresh** to re-run after editing content.
+
+#### Requirements
+
+- Table API read access to `kb_knowledge` is needed for dead-link and retired-target checks.
+- If API access is unavailable, structural checks still run and the report shows a validation warning.
 
 ---
 
