@@ -85,6 +85,11 @@ An interactive, Obsidian-style graph visualisation that shows how ServiceNow Kno
 
 <img width="1155" height="1143" alt="Tree view showing hierarchical article links with duplicate detection badges" src="https://github.com/user-attachments/assets/4267698b-fd98-4f6a-9bc7-e3cb09b32d31" />
 
+**Reverse links:**
+
+<img width="408" height="627" alt="image" src="https://github.com/user-attachments/assets/c71abe1f-338c-4b79-b663-ee0291902329" />
+
+
 #### How it works
 
 1. Navigate to any ServiceNow KB article (`kb_view.do` or `kb_article.do`).
