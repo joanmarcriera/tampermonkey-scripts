@@ -914,7 +914,22 @@
         resetBtn.id = 'kb-graph-reset-btn';
         makeBtnStyle(resetBtn);
 
+        const expandAllBtn = document.createElement('button');
+        expandAllBtn.id = 'kb-graph-expand-all';
+        expandAllBtn.textContent = '+ Expand All';
+        expandAllBtn.title = 'Fetch & expand all unexpanded nodes (next level)';
+        makeBtnStyle(expandAllBtn);
+
+        const collapseAllBtn = document.createElement('button');
+        collapseAllBtn.id = 'kb-graph-collapse-all';
+        collapseAllBtn.textContent = '\u2212 Collapse All';
+        collapseAllBtn.title = 'Collapse all nodes in tree view';
+        makeBtnStyle(collapseAllBtn);
+        collapseAllBtn.style.display = 'none';
+
         controlsRight.appendChild(viewToggleBtn);
+        controlsRight.appendChild(expandAllBtn);
+        controlsRight.appendChild(collapseAllBtn);
         controlsRight.appendChild(fitBtn);
         controlsRight.appendChild(resetBtn);
         footer.appendChild(infoArea);
@@ -1009,7 +1024,7 @@
         document.body.appendChild(overlay);
         return {
             overlay, panel, graphContainer, loading, titleText, infoArea,
-            fitBtn, resetBtn, viewToggleBtn,
+            fitBtn, resetBtn, viewToggleBtn, expandAllBtn, collapseAllBtn,
         };
     }
 
@@ -1083,12 +1098,16 @@
             treeRenderer.render(graphModel, graphModel.getNodesArray()[0]?.id);
             fitBtn.style.display = 'none';
             resetBtn.style.display = 'none';
+            panelElements.expandAllBtn.style.display = '';
+            panelElements.collapseAllBtn.style.display = '';
         } else {
             btn.textContent = 'Tree View';
             treeRenderer.hide();
             renderer.show();
             fitBtn.style.display = '';
             resetBtn.style.display = '';
+            panelElements.expandAllBtn.style.display = '';
+            panelElements.collapseAllBtn.style.display = 'none';
         }
     }
 
@@ -1134,6 +1153,8 @@
         // Wire up controls
         panelElements.fitBtn.onclick = function () { renderer.fitToView(); };
         panelElements.resetBtn.onclick = function () { renderer.resetZoom(); };
+        panelElements.expandAllBtn.onclick = function () { handleExpandNextLevel(); };
+        panelElements.collapseAllBtn.onclick = function () { handleCollapseAll(); };
         panelElements.viewToggleBtn.onclick = function () {
             switchView(currentView === 'graph' ? 'tree' : 'graph');
         };
@@ -1225,6 +1246,81 @@
 
     function handleOpen(node) {
         window.open(buildKbUrl(node.id), '_blank');
+    }
+
+    /** Expand next level: fetch all currently-unexpanded visible nodes */
+    async function handleExpandNextLevel() {
+        if (!graphModel) return;
+
+        const toExpand = [];
+        for (const [id, node] of graphModel.nodes) {
+            if (!node.expanded) toExpand.push(node);
+        }
+
+        if (toExpand.length === 0) {
+            updateInfo('All nodes are already expanded');
+            return;
+        }
+
+        setLoading(true);
+        updateInfo('Expanding ' + toExpand.length + ' nodes...');
+
+        let totalNew = 0;
+        for (const node of toExpand) {
+            try {
+                const result = await graphModel.expandNode(node.id);
+                totalNew += result.newNodes.length;
+            } catch (e) {
+                if (e.status === 401 || e.status === 403) {
+                    updateInfo('Session expired or access denied. Refresh the page.');
+                    setLoading(false);
+                    return;
+                }
+                console.warn('KB Graph: could not expand ' + node.id, e.message);
+            }
+        }
+
+        // Update graph renderer with all new data
+        renderer.addIncremental(
+            graphModel.getNodesArray(),
+            graphModel.getLinksArray()
+        );
+
+        // Fetch titles for new nodes
+        graphModel.fetchTitlesForUnexpanded().then(function (updated) {
+            if (updated.length > 0) {
+                renderer.updateLabels();
+                if (currentView === 'tree') {
+                    const centralId = graphModel.getNodesArray()[0]?.id;
+                    treeRenderer.render(graphModel, centralId);
+                }
+            }
+        });
+
+        // Refresh tree view
+        if (currentView === 'tree') {
+            const centralId = graphModel.getNodesArray()[0]?.id;
+            treeRenderer.render(graphModel, centralId);
+        }
+
+        selectedNode = null;
+        updateNodeCount();
+        updateInfo('Expanded ' + toExpand.length + ' nodes, found ' + totalNew + ' new articles');
+        setLoading(false);
+    }
+
+    /** Collapse all nodes in tree view */
+    function handleCollapseAll() {
+        if (!treeRenderer || !graphModel) return;
+        // Add all expanded nodes to the collapsed set
+        for (const [id, node] of graphModel.nodes) {
+            if (node.expanded) {
+                treeRenderer.collapsedNodes.add(id);
+            }
+        }
+        const centralId = graphModel.getNodesArray()[0]?.id;
+        treeRenderer.render(graphModel, centralId);
+        updateInfo('All nodes collapsed');
     }
 
     // ─── Toggle Button ───────────────────────────────────────────
