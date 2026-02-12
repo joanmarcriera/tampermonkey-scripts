@@ -6,6 +6,7 @@
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_view.do*
 // @match        *://*/kb_article.do*
+// @match        *://*/esc?id=kb_article*
 // @require      https://d3js.org/d3.v7.min.js
 // @grant        none
 // ==/UserScript==
@@ -193,9 +194,7 @@
     }
 
     function parseLinkKey(key) {
-        const parts = key.split(LINK_KEY_SEP);
-        if (parts.length === 2) return parts;
-        const idx = key.indexOf('|');
+        const idx = key.indexOf(LINK_KEY_SEP);
         if (idx >= 0) return [key.slice(0, idx), key.slice(idx + 1)];
         return [key, key];
     }
@@ -231,14 +230,14 @@
 
             let status = 'unknown';
             try {
-                const resp = await fetch(url, { method: 'HEAD', mode: 'cors' });
+                const resp = await fetch(url, { method: 'HEAD', mode: 'cors', credentials: 'omit' });
                 if (resp.ok) status = 'ok';
                 else if (resp.status === 404) status = 'broken';
                 else if (resp.status === 401 || resp.status === 403) status = 'auth-required';
             } catch (e) {
                 try {
-                    const fallback = await fetch(url, { method: 'HEAD', mode: 'no-cors' });
-                    status = fallback && fallback.type === 'opaque' ? 'unknown' : status;
+                    await fetch(url, { method: 'HEAD', mode: 'no-cors', credentials: 'omit' });
+                    status = 'unknown'; // opaque response — can't determine status
                 } catch (e2) {
                     status = 'broken';
                 }
@@ -312,13 +311,17 @@
             if (targets.length === 0) return [];
 
             const updated = [];
-            await Promise.all(targets.map(async (node) => {
-                const status = await this.checkNode(node);
-                if (status !== node.linkStatus) {
-                    node.linkStatus = status;
-                    updated.push(node.id);
-                }
-            }));
+            const BATCH_SIZE = 6;
+            for (let i = 0; i < targets.length; i += BATCH_SIZE) {
+                const batch = targets.slice(i, i + BATCH_SIZE);
+                await Promise.all(batch.map(async (node) => {
+                    const status = await this.checkNode(node);
+                    if (status !== node.linkStatus) {
+                        node.linkStatus = status;
+                        updated.push(node.id);
+                    }
+                }));
+            }
 
             return updated;
         }
@@ -1078,7 +1081,9 @@
             const node = model.nodes.get(nodeId);
             if (!node) return;
             if (node.type !== 'kb') {
-                this._renderExternalRow(node, depth, parentEl);
+                if (model.showExternalLinks) {
+                    this._renderExternalRow(node, depth, parentEl);
+                }
                 return;
             }
 
@@ -1674,15 +1679,22 @@
 
     async function checkExternalNodes(nodes) {
         if (!linkChecker || !graphModel || !nodes || nodes.length === 0) return;
-        const updated = await linkChecker.checkBatch(nodes);
-        if (updated.length > 0) {
-            renderCurrentState();
-            if (selectedNode && graphModel.nodes.has(selectedNode.id)) {
-                selectedNode = graphModel.nodes.get(selectedNode.id);
-                updateInfo(null, selectedNode);
-            } else if (selectedNode && !graphModel.nodes.has(selectedNode.id)) {
-                selectedNode = null;
-                updateNodeCount();
+        const targets = (nodes || []).filter(n => n && n.linkStatus === 'unknown');
+        if (targets.length === 0) return;
+
+        const BATCH_SIZE = 6;
+        for (let i = 0; i < targets.length; i += BATCH_SIZE) {
+            const batch = targets.slice(i, i + BATCH_SIZE);
+            const updated = await linkChecker.checkBatch(batch);
+            if (updated.length > 0) {
+                renderCurrentState();
+                if (selectedNode && graphModel.nodes.has(selectedNode.id)) {
+                    selectedNode = graphModel.nodes.get(selectedNode.id);
+                    updateInfo(null, selectedNode);
+                } else if (selectedNode && !graphModel.nodes.has(selectedNode.id)) {
+                    selectedNode = null;
+                    updateNodeCount();
+                }
             }
         }
     }
