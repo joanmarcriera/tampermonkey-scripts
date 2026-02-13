@@ -7,6 +7,8 @@
 // @match        *://*/kb_article.do*
 // @match        *://*/esc?id=kb_article*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-obsidian-export.user.js
+// @downloadURL  https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-obsidian-export.user.js
 // ==/UserScript==
 
 (function () {

@@ -6,6 +6,8 @@
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_knowledge.do*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-content-merger.user.js
+// @downloadURL  https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-content-merger.user.js
 // ==/UserScript==
 
 (function () {

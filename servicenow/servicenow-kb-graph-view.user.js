@@ -9,6 +9,8 @@
 // @match        *://*/esc?id=kb_article*
 // @require      https://d3js.org/d3.v7.min.js
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-graph-view.user.js
+// @downloadURL  https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-graph-view.user.js
 // ==/UserScript==
 
 (function () {

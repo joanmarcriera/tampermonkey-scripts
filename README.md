@@ -55,7 +55,7 @@ Click the raw file link for each script below. Tampermonkey will detect it and o
 
 - [`servicenow-kb-graph-view.user.js`](servicenow/servicenow-kb-graph-view.user.js)
 - [`servicenow-kb-reverse-links.user.js`](servicenow/servicenow-kb-reverse-links.user.js)
-- [`servicenow-to-obisidian-markdown.script`](servicenow/servicenow-to-obisidian-markdown.script)
+- [`servicenow-kb-obsidian-export.user.js`](servicenow/servicenow-kb-obsidian-export.user.js)
 - [`servicenow-kb-health-badge.user.js`](servicenow/servicenow-kb-health-badge.user.js)
 - [`servicenow-kb-link-linter.user.js`](servicenow/servicenow-kb-link-linter.user.js)
 - [`servicenow-kb-link-preview.user.js`](servicenow/servicenow-kb-link-preview.user.js)
@@ -150,7 +150,7 @@ Shows which other KB articles and tasks (incidents, catalog tasks, etc.) referen
 
 ### KB Obsidian Export
 
-**File:** [`servicenow/servicenow-to-obisidian-markdown.script`](servicenow/servicenow-to-obisidian-markdown.script)
+**File:** [`servicenow/servicenow-kb-obsidian-export.user.js`](servicenow/servicenow-kb-obsidian-export.user.js)
 
 Exports the current ServiceNow KB article as a clean Markdown file ready for [Obsidian](https://obsidian.md/), with proper `[[wikilinks]]` to other KB articles.
 

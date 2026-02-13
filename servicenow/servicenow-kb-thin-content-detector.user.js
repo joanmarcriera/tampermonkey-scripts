@@ -8,6 +8,8 @@
 // @match        *://*/kb_article.do*
 // @match        *://*/esc?id=kb_article*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-thin-content-detector.user.js
+// @downloadURL  https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-thin-content-detector.user.js
 // ==/UserScript==
 
 (function () {
