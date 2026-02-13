@@ -6,6 +6,22 @@ A collection of [Tampermonkey](https://www.tampermonkey.net/) userscripts that e
 
 ---
 
+## Vision & Principles
+
+Documentation is pivotal to any company to work in a standardised way. The consequences of the work done during these last 3 hours on this would have an impact on the 600 users as long as the people doing the documentation keep it tidy and useful.
+
+To achieve this, we follow these core principles:
+
+- **No external links**: We don't want links going outside the ServiceNow Knowledge Base; keeping users within the ecosystem ensures they don't get lost.
+- **No short documents**: Fragmented "thin" content is avoided. It requires extra clicks and often leads to dead ends.
+- **Table of Contents**: All documentation must have a Table of Contents (using the native ServiceNow Knowledge Base tool) to ensure easy scanning.
+- **Value-Driven Linking**: The linking between each Knowledge Base article must make sense and add clear value to the journey of the user.
+
+![Is it worth the time?](https://imgs.xkcd.com/comics/is_it_worth_the_time.png)
+*Source: [XKCD 1205](https://xkcd.com/1205/)*
+
+---
+
 ## Scripts
 
 | Script | Description | Version |
