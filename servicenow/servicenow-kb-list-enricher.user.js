@@ -1,10 +1,14 @@
 // ==UserScript==
 // @name         ServiceNow KB List Enricher
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.1
+// @version      1.2
 // @description  Enrich KB list view with metrics: in-links, out-links, word count, and malformed links. Handles dynamic Angular content.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/$knowledge.do*
+// @match        *://*/%24knowledge.do*
+// @match        *://*/kb_knowledge_home.do*
+// @match        *://*/kb_home.do*
+// @match        *://*/kb_find.do*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-list-enricher.user.js
 // @downloadURL  https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-list-enricher.user.js
@@ -12,6 +16,8 @@
 
 (function () {
     'use strict';
+
+    console.log('KB Enricher: Script loaded on ' + window.location.href);
 
     const ENRICH_CLASS = 'kb-list-enriched';
     const BADGE_CLASS = 'kb-enricher-badge';
@@ -55,26 +61,34 @@
         document.head.appendChild(style);
     }
 
-    async function fetchBatchData(articleIds) {
-        if (articleIds.length === 0) return { articles: [], links: [] };
+    async function fetchBatchData(articleIds, kbNumbers) {
+        if (articleIds.length === 0 && kbNumbers.length === 0) return { articles: [], links: [] };
 
-        const articleQuery = 'sys_idIN' + articleIds.join(',');
+        let articleQuery = '';
+        if (articleIds.length > 0) articleQuery += 'sys_idIN' + articleIds.join(',');
+        if (kbNumbers.length > 0) {
+            if (articleQuery) articleQuery += '^OR';
+            articleQuery += 'numberIN' + kbNumbers.join(',');
+        }
+
         const articleUrl = `${window.location.origin}/api/now/table/kb_knowledge?sysparm_query=${encodeURIComponent(articleQuery)}&sysparm_fields=sys_id,number,text,short_description`;
 
-        const relQuery = 'kb_knowledgeIN' + articleIds.join(',') + '^ORkb_knowledge_relatedIN' + articleIds.join(',');
-        const relUrl = `${window.location.origin}/api/now/table/kb_2_kb?sysparm_query=${encodeURIComponent(relQuery)}&sysparm_fields=kb_knowledge,kb_knowledge_related`;
-
         try {
-            const [artResp, relResp] = await Promise.all([
-                fetch(articleUrl, { headers: { 'Accept': 'application/json', 'X-UserToken': getAuthToken() } }),
-                fetch(relUrl, { headers: { 'Accept': 'application/json', 'X-UserToken': getAuthToken() } })
-            ]);
-
+            const artResp = await fetch(articleUrl, { headers: { 'Accept': 'application/json', 'X-UserToken': getAuthToken() } });
             const artData = artResp.ok ? await artResp.json() : { result: [] };
+            const articles = artData.result || [];
+
+            if (articles.length === 0) return { articles: [], links: [] };
+
+            const allSysIds = articles.map(a => a.sys_id);
+            const relQuery = 'kb_knowledgeIN' + allSysIds.join(',') + '^ORkb_knowledge_relatedIN' + allSysIds.join(',');
+            const relUrl = `${window.location.origin}/api/now/table/kb_2_kb?sysparm_query=${encodeURIComponent(relQuery)}&sysparm_fields=kb_knowledge,kb_knowledge_related`;
+
+            const relResp = await fetch(relUrl, { headers: { 'Accept': 'application/json', 'X-UserToken': getAuthToken() } });
             const relData = relResp.ok ? await relResp.json() : { result: [] };
 
             return {
-                articles: artData.result || [],
+                articles: articles,
                 links: relData.result || []
             };
         } catch (e) {
@@ -160,17 +174,20 @@
             return;
         }
 
-        // We primarily use sys_id for batch fetching. If we have KB numbers, we'd need to resolve them or query by number.
-        // On $knowledge.do, they are almost always sys_kb_id.
-        const data = await fetchBatchData(articleIds);
+        // Batch fetch using both sys_ids and KB numbers
+        const data = await fetchBatchData(articleIds, kbNumbers);
         console.log('KB Enricher: Fetched data for ' + data.articles.length + ' articles.');
 
         data.articles.forEach(article => {
             const metrics = processArticle(article, data.links);
-            const targets = idMap.get(article.sys_id);
-            if (!targets) return;
+            // Try matching targets by sys_id or number
+            const targets = (idMap.get(article.sys_id) || []).concat(idMap.get(article.number) || []);
+            if (targets.length === 0) return;
 
-            targets.forEach(a => {
+            // Deduplicate targets
+            const uniqueTargets = [...new Set(targets)];
+
+            uniqueTargets.forEach(a => {
                 // Ensure we haven't added it already (check sibling)
                 if (a.nextSibling && a.nextSibling.classList && a.nextSibling.classList.contains(BADGE_CLASS)) return;
 
