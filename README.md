@@ -34,7 +34,7 @@ To achieve this, we follow these core principles:
 | [KB Link Preview](#-kb-link-preview) | Hover preview with health status and content snippet | 1.3 |
 | [KB Content Merger](#-kb-content-merger) | Copy clean HTML from linked articles directly in the editor | 1.1 |
 | [KB Thin Content Detector](#-kb-thin-content-detector) | Identify noise, short articles, and dead ends | 1.1 |
-| [KB List Enricher](#-kb-list-enricher) | Enrich KB search results with metrics (in/out links, words) | 1.0 |
+| [KB List Enricher](#-kb-list-enricher) | Enrich KB search results with metrics (in/out links, words) | 1.1 |
 
 ---
 

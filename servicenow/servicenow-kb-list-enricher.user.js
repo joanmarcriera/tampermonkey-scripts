@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ServiceNow KB List Enricher
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.0
-// @description  Enrich KB list view with metrics: in-links, out-links, word count, and malformed links
+// @version      1.1
+// @description  Enrich KB list view with metrics: in-links, out-links, word count, and malformed links. Handles dynamic Angular content.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/$knowledge.do*
 // @grant        none
@@ -28,31 +28,29 @@
         style.textContent = `
             .${BADGE_CLASS} {
                 display: inline-flex;
-                gap: 8px;
-                margin-left: 10px;
+                gap: 6px;
+                margin-left: 8px;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                font-size: 11px;
+                font-size: 10px;
                 vertical-align: middle;
                 font-weight: normal;
-                color: #94a3b8;
             }
             .${BADGE_CLASS} span {
                 display: flex;
                 align-items: center;
-                gap: 3px;
-                padding: 1px 5px;
-                background: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 4px;
+                gap: 2px;
+                padding: 1px 4px;
+                background: #f1f5f9;
+                border: 1px solid #cbd5e1;
+                border-radius: 3px;
+                color: #475569;
             }
-            .${BADGE_CLASS} .kb-metric-in { color: #818cf8; }
-            .${BADGE_CLASS} .kb-metric-out { color: #34d399; }
-            .${BADGE_CLASS} .kb-metric-words { color: #fbbf24; }
-            .${BADGE_CLASS} .kb-metric-broken { color: #f87171; border-color: #7f1d1d; }
+            .${BADGE_CLASS} .kb-metric-in { color: #4338ca; border-color: #c7d2fe; background: #e0e7ff; }
+            .${BADGE_CLASS} .kb-metric-out { color: #065f46; border-color: #a7f3d0; background: #ecfdf5; }
+            .${BADGE_CLASS} .kb-metric-words { color: #92400e; border-color: #fde68a; background: #fffbeb; }
+            .${BADGE_CLASS} .kb-metric-broken { color: #991b1b; border-color: #fecaca; background: #fef2f2; }
 
-            /* Highlighting for lean candidates */
-            .kb-metric-words.critical { background: #450a0a; color: #f87171; border-color: #991b1b; }
-            .kb-metric-in.none { opacity: 0.5; }
+            .kb-metric-words.critical { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; font-weight: bold; }
         `;
         document.head.appendChild(style);
     }
@@ -63,7 +61,6 @@
         const articleQuery = 'sys_idIN' + articleIds.join(',');
         const articleUrl = `${window.location.origin}/api/now/table/kb_knowledge?sysparm_query=${encodeURIComponent(articleQuery)}&sysparm_fields=sys_id,number,text,short_description`;
 
-        // Also query kb_2_kb for incoming links (explicit relationships)
         const relQuery = 'kb_knowledgeIN' + articleIds.join(',') + '^ORkb_knowledge_relatedIN' + articleIds.join(',');
         const relUrl = `${window.location.origin}/api/now/table/kb_2_kb?sysparm_query=${encodeURIComponent(relQuery)}&sysparm_fields=kb_knowledge,kb_knowledge_related`;
 
@@ -101,7 +98,6 @@
             const href = a.getAttribute('href') || '';
             if (href.includes('kb_view.do') || href.includes('kb_article') || href.includes('sysparm_article=KB')) {
                 outLinks++;
-                // Shallow broken check: missing identifier
                 if (!href.includes('sysparm_article=KB') && !href.includes('sys_id=') && !href.includes('sys_kb_id=')) {
                     brokenLinks++;
                 }
@@ -110,7 +106,6 @@
             }
         });
 
-        // Incoming links from kb_2_kb
         const inLinks = allRels.filter(r => {
             const fromId = (typeof r.kb_knowledge === 'object') ? r.kb_knowledge.value : r.kb_knowledge;
             const toId = (typeof r.kb_knowledge_related === 'object') ? r.kb_knowledge_related.value : r.kb_knowledge_related;
@@ -120,27 +115,55 @@
         return { wordCount, outLinks, inLinks, brokenLinks };
     }
 
+    function extractIdFromLink(a) {
+        try {
+            const url = new URL(a.href, window.location.origin);
+            return url.searchParams.get('sys_kb_id') || url.searchParams.get('sys_id') || url.searchParams.get('sysparm_article');
+        } catch (e) {
+            return null;
+        }
+    }
+
+    let isRunning = false;
     async function enrichList() {
-        const anchors = Array.from(document.querySelectorAll('a[href*="sys_kb_id"]:not(.' + ENRICH_CLASS + ')'));
+        if (isRunning) return;
+
+        // Match Knowledge list links. They typically have sys_kb_id or lead to kb_view.do
+        const selector = 'a[href*="sys_kb_id"]:not(.' + ENRICH_CLASS + '), a[href*="kb_view.do"]:not(.' + ENRICH_CLASS + ')';
+        const anchors = Array.from(document.querySelectorAll(selector));
+
         if (anchors.length === 0) return;
+        console.log('KB Enricher: Found ' + anchors.length + ' new links to process.');
+        isRunning = true;
 
         ensureStyles();
 
         const idMap = new Map();
+        const articleIds = [];
+        const kbNumbers = [];
+
         anchors.forEach(a => {
-            const url = new URL(a.href, window.location.origin);
-            const id = url.searchParams.get('sys_kb_id');
+            const id = extractIdFromLink(a);
             if (id) {
-                if (!idMap.has(id)) idMap.set(id, []);
+                if (!idMap.has(id)) {
+                    idMap.set(id, []);
+                    if (id.startsWith('KB')) kbNumbers.push(id);
+                    else articleIds.push(id);
+                }
                 idMap.get(id).push(a);
                 a.classList.add(ENRICH_CLASS);
             }
         });
 
-        const articleIds = Array.from(idMap.keys());
-        if (articleIds.length === 0) return;
+        if (articleIds.length === 0 && kbNumbers.length === 0) {
+            isRunning = false;
+            return;
+        }
 
+        // We primarily use sys_id for batch fetching. If we have KB numbers, we'd need to resolve them or query by number.
+        // On $knowledge.do, they are almost always sys_kb_id.
         const data = await fetchBatchData(articleIds);
+        console.log('KB Enricher: Fetched data for ' + data.articles.length + ' articles.');
 
         data.articles.forEach(article => {
             const metrics = processArticle(article, data.links);
@@ -148,14 +171,16 @@
             if (!targets) return;
 
             targets.forEach(a => {
+                // Ensure we haven't added it already (check sibling)
+                if (a.nextSibling && a.nextSibling.classList && a.nextSibling.classList.contains(BADGE_CLASS)) return;
+
                 const badge = document.createElement('div');
                 badge.className = BADGE_CLASS;
 
                 const wordClass = metrics.wordCount < 100 ? 'critical' : '';
-                const inClass = metrics.inLinks === 0 ? 'none' : '';
 
                 badge.innerHTML = `
-                    <span class="kb-metric-in ${inClass}" title="Incoming links (explicit)">📥 ${metrics.inLinks}</span>
+                    <span class="kb-metric-in" title="Incoming links (explicit)">📥 ${metrics.inLinks}</span>
                     <span class="kb-metric-out" title="Outgoing KB links">📤 ${metrics.outLinks}</span>
                     <span class="kb-metric-words ${wordClass}" title="Word count">📝 ${metrics.wordCount}</span>
                     ${metrics.brokenLinks > 0 ? `<span class="kb-metric-broken" title="Malformed/Empty links">❌ ${metrics.brokenLinks}</span>` : ''}
@@ -163,10 +188,27 @@
                 a.parentNode.insertBefore(badge, a.nextSibling);
             });
         });
+
+        isRunning = false;
     }
 
-    // Run on load and periodically for dynamic content
+    // Use MutationObserver to watch for Angular rendering content
+    const observer = new MutationObserver((mutations) => {
+        let shouldRun = false;
+        for (const mutation of mutations) {
+            if (mutation.addedNodes.length > 0) {
+                shouldRun = true;
+                break;
+            }
+        }
+        if (shouldRun) {
+            enrichList();
+        }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // Initial run
     setTimeout(enrichList, 2000);
-    setInterval(enrichList, 5000);
 
 })();
