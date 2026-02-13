@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ServiceNow KB Link Linter
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.0
-// @description  Lint KB article links: malformed KB URLs, duplicates, and dead KB targets
+// @version      1.1
+// @description  Lint KB article links: malformed KB URLs, duplicates, and dead KB targets. Supports ESC Portal.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_view.do*
 // @match        *://*/kb_article.do*
@@ -73,6 +73,12 @@
         const article = document.getElementById('article');
         if (article && article.innerHTML) return article.innerHTML;
 
+        const portalContent = document.querySelector('.kb-article-content') ||
+                            document.querySelector('.kb-article-body') ||
+                            document.querySelector('article .kb-content') ||
+                            document.querySelector('.article-content');
+        if (portalContent) return portalContent.innerHTML;
+
         return '';
     }
 
@@ -96,14 +102,16 @@
         if (direct) {
             const kb = direct.trim().toUpperCase();
             if (/^KB\d+$/.test(kb)) return { kb: kb };
-            return { error: 'Invalid KB number parameter: ' + direct };
         }
+
+        const sysId = urlObj.searchParams.get('sys_id') || urlObj.searchParams.get('sysparm_sys_id');
+        if (sysId && /^[0-9a-f]{32}$/.test(sysId)) return { sysId: sysId };
 
         const text = String(rawHref || '').toUpperCase();
         const match = text.match(/\bKB\d+\b/);
         if (match) return { kb: match[0] };
 
-        return { error: 'Missing sysparm_article=KB... parameter' };
+        return { error: 'Missing KB identification parameter' };
     }
 
     function lintLinksFromHtml(html) {
@@ -148,9 +156,9 @@
             const parsed = extractKbTarget(urlObj, rawHref);
             const label = normalizeText(a.textContent) || '(no label)';
 
-            if (parsed.kb) {
+            if (parsed.kb || parsed.sysId) {
                 kbLinks.push({
-                    kb: parsed.kb,
+                    kb: parsed.kb || parsed.sysId,
                     text: label,
                     href: normalizedHref,
                 });
@@ -232,26 +240,35 @@
         return chunks;
     }
 
-    async function resolveKbTargets(kbNumbers) {
+    async function resolveKbTargets(ids) {
         const result = new Map();
-        if (kbNumbers.length === 0) return result;
+        if (ids.length === 0) return result;
 
-        const chunks = chunkArray(kbNumbers, CHUNK_SIZE);
+        const chunks = chunkArray(ids, CHUNK_SIZE);
         for (const chunk of chunks) {
-            const query = 'numberIN' + chunk.join(',');
+            const kbNums = chunk.filter(id => id.startsWith('KB'));
+            const sysIds = chunk.filter(id => !id.startsWith('KB'));
+
+            let queries = [];
+            if (kbNums.length > 0) queries.push('numberIN' + kbNums.join(','));
+            if (sysIds.length > 0) queries.push('sys_idIN' + sysIds.join(','));
+
+            const query = queries.join('^OR');
             const url = window.location.origin +
                 '/api/now/table/kb_knowledge?sysparm_query=' + encodeURIComponent(query) +
-                '&sysparm_fields=number,short_description,workflow_state&sysparm_limit=' + chunk.length;
+                '&sysparm_fields=number,sys_id,short_description,workflow_state&sysparm_limit=' + chunk.length;
             const data = await fetchJson(url);
             const records = data.result || [];
             for (const record of records) {
                 const number = normalizeText(record.number).toUpperCase();
-                if (!number) continue;
-                result.set(number, {
+                const sys_id = record.sys_id;
+                const entry = {
                     number: number,
                     title: normalizeText(record.short_description) || number,
                     workflowState: normalizeText(record.workflow_state || 'unknown').toLowerCase(),
-                });
+                };
+                if (number) result.set(number, entry);
+                if (sys_id) result.set(sys_id, entry);
             }
         }
 
@@ -261,7 +278,7 @@
     async function runLint() {
         const html = getArticleHtml();
         if (!html) {
-            throw new Error('Could not find article content (`articleOriginal`).');
+            throw new Error('Could not find article content.');
         }
 
         const linted = lintLinksFromHtml(html);
@@ -275,13 +292,21 @@
 
         try {
             const resolved = await resolveKbTargets(uniqueTargets);
-            deadTargets = uniqueTargets.filter(function (kb) { return !resolved.has(kb); });
+            deadTargets = uniqueTargets.filter(function (id) { return !resolved.has(id); });
 
             retiredTargets = uniqueTargets
-                .map(function (kb) { return resolved.get(kb); })
+                .map(function (id) { return resolved.get(id); })
                 .filter(function (item) {
                     return item && (item.workflowState === 'retired' || item.workflowState === 'pending_retirement');
                 });
+
+            // Deduplicate retired targets if both KB and sys_id were used
+            const seen = new Set();
+            retiredTargets = retiredTargets.filter(item => {
+                if (seen.has(item.number)) return false;
+                seen.add(item.number);
+                return true;
+            });
         } catch (e) {
             apiError = e.message || 'Could not validate KB targets';
         }
@@ -476,7 +501,7 @@
         } else if (report.deadTargets.length === 0) {
             addEmpty(deadBox, 'No dead KB targets found.');
         } else {
-            for (const kb of report.deadTargets) {
+            for (const id of report.deadTargets) {
                 const row = document.createElement('div');
                 Object.assign(row.style, {
                     borderTop: '1px solid #1f2937',
@@ -484,8 +509,8 @@
                     marginTop: '6px',
                     fontSize: '12px',
                 });
-                row.textContent = kb + ' (not found in kb_knowledge)';
-                addActionLink(row, 'Open', buildKbUrl(kb));
+                row.textContent = id + ' (not found in kb_knowledge)';
+                if (id.startsWith('KB')) addActionLink(row, 'Open', buildKbUrl(id));
                 deadBox.appendChild(row);
             }
         }

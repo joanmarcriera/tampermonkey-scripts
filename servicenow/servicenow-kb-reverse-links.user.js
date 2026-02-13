@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ServiceNow KB Reverse Links
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.1
-// @description  Show which KB articles and tasks reference the current KB article (incoming links)
+// @version      1.2
+// @description  Show which KB articles and tasks reference the current KB article (incoming links). Supports ESC Portal.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_view.do*
 // @match        *://*/kb_article.do*
@@ -31,20 +31,37 @@
 
     // ─── Helpers ─────────────────────────────────────────────────
 
+    function normalizeText(text) {
+        return String(text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function queryText(selector) {
+        const el = document.querySelector(selector);
+        return el ? normalizeText(el.textContent) : '';
+    }
+
     function getKbNumber() {
-        const el = document.getElementById('articleNumberReadonly');
-        if (el && el.textContent.trim()) {
-            return el.textContent.trim().split(/\s+/)[0];
-        }
-        // Fallback for ESC portal
+        const readonly = queryText('#articleNumberReadonly');
+        const fromReadonly = readonly.match(/\bKB\d+\b/i);
+        if (fromReadonly) return fromReadonly[0].toUpperCase();
+
         const params = new URLSearchParams(window.location.search);
-        const article = params.get('sysparm_article') || params.get('number');
-        if (article && article.startsWith('KB')) return article;
+        const fromUrl = params.get('sysparm_article') || params.get('number');
+        if (fromUrl && /^KB\d+$/i.test(fromUrl)) return fromUrl.toUpperCase();
+
+        const portalSpan = queryText('.kb-number');
+        if (portalSpan && /^KB\d+$/i.test(portalSpan)) return portalSpan.toUpperCase();
+
         return null;
     }
 
+    function getSysId() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('sys_id') || params.get('sysparm_sys_id') || '';
+    }
+
     function getArticleTitle() {
-        const el = document.getElementById('articleTitleReadonly');
+        const el = document.getElementById('articleTitleReadonly') || document.querySelector('.kb-title');
         if (el && el.textContent.trim()) {
             return el.textContent.trim();
         }
@@ -120,15 +137,16 @@
         throw lastErr;
     }
 
-    async function resolveArticleSysId(kbNumber) {
+    async function resolveArticleInfo(kbNumber, sysId) {
         var base = window.location.origin;
-        var url = base + '/api/now/table/kb_knowledge?sysparm_query=number=' +
-            encodeURIComponent(kbNumber) +
+        var query = sysId ? 'sys_id=' + sysId : 'number=' + kbNumber;
+        var url = base + '/api/now/table/kb_knowledge?sysparm_query=' +
+            encodeURIComponent(query) +
             '&sysparm_fields=sys_id,number,short_description&sysparm_limit=1';
 
         var data = await fetchJson(url);
         if (!data.result || data.result.length === 0) {
-            var err = new Error('Article ' + kbNumber + ' not found');
+            var err = new Error('Article not found');
             err.status = 404;
             throw err;
         }
@@ -137,7 +155,7 @@
         return {
             sysId: article.sys_id,
             number: article.number,
-            title: article.short_description || kbNumber,
+            title: article.short_description || article.number,
         };
     }
 
@@ -169,28 +187,10 @@
 
                 if (refFields.length >= 2) {
                     cachedKb2KbFields = { fieldA: refFields[0], fieldB: refFields[1] };
-                    console.log('KB Reverse Links: discovered kb_2_kb fields:', cachedKb2KbFields);
-                    return cachedKb2KbFields;
-                }
-
-                // If reference fields are stored as plain strings (sys_ids), try common names
-                var candidates = ['kb_knowledge', 'kb_knowledge_related', 'u_kb_article',
-                    'u_related_article', 'kb_article_one', 'kb_article_two',
-                    'article', 'related_article'];
-                var found = [];
-                for (var c = 0; c < candidates.length; c++) {
-                    if (record.hasOwnProperty(candidates[c])) {
-                        found.push(candidates[c]);
-                    }
-                }
-                if (found.length >= 2) {
-                    cachedKb2KbFields = { fieldA: found[0], fieldB: found[1] };
-                    console.log('KB Reverse Links: discovered kb_2_kb fields (string match):', cachedKb2KbFields);
                     return cachedKb2KbFields;
                 }
             }
         } catch (e) {
-            console.warn('KB Reverse Links: could not query kb_2_kb directly:', e.message);
             if (e.status === 403 || e.status === 404) {
                 throw e; // no access to this table
             }
@@ -207,16 +207,12 @@
                     fieldA: dictData.result[0].element,
                     fieldB: dictData.result[1].element,
                 };
-                console.log('KB Reverse Links: discovered kb_2_kb fields via sys_dictionary:', cachedKb2KbFields);
                 return cachedKb2KbFields;
             }
-        } catch (e) {
-            console.warn('KB Reverse Links: could not query sys_dictionary:', e.message);
-        }
+        } catch (e) {}
 
-        // Strategy 3: hardcoded fallback (most common ServiceNow field names)
+        // Strategy 3: hardcoded fallback
         cachedKb2KbFields = { fieldA: 'kb_knowledge', fieldB: 'kb_knowledge_related' };
-        console.log('KB Reverse Links: using fallback kb_2_kb field names:', cachedKb2KbFields);
         return cachedKb2KbFields;
     }
 
@@ -245,17 +241,14 @@
         for (var i = 0; i < results.length; i++) {
             var record = results[i];
 
-            // Find the "other" article — the one that is NOT sysId
             var otherNumber = null;
             var otherTitle = null;
 
-            // Check fieldA side
             var aVal = record[fieldA];
             var aSysId = (aVal && typeof aVal === 'object') ? aVal.value : aVal;
             var aNumber = record[fieldA + '.number'] || '';
             var aTitle = record[fieldA + '.short_description'] || '';
 
-            // Check fieldB side
             var bVal = record[fieldB];
             var bSysId = (bVal && typeof bVal === 'object') ? bVal.value : bVal;
             var bNumber = record[fieldB + '.number'] || '';
@@ -268,12 +261,10 @@
                 otherNumber = aNumber;
                 otherTitle = aTitle;
             } else {
-                // Shouldn't happen, but skip
                 continue;
             }
 
             if (!otherNumber || seen.has(otherNumber)) continue;
-            // Skip self-references
             if (otherNumber === state.kbNumber) continue;
             seen.add(otherNumber);
 
@@ -320,17 +311,8 @@
         return { links: links, totalCount: totalCount };
     }
 
-    // ─── Hyperlink-based Reverse Search ────────────────────────
-
-    /**
-     * Search for KB articles whose body HTML contains a hyperlink to the target article.
-     * This finds the same links the KB Graph View discovers by parsing article HTML.
-     * Uses ServiceNow's CONTAINS query operator on the `text` field.
-     */
     async function fetchReverseHyperlinkRefs(kbNumber) {
         var base = window.location.origin;
-        // Search for articles whose HTML body contains a link to this KB number.
-        // Articles link via sysparm_article=KBxxxxxx in kb_view.do or kb_article URLs.
         var searchTerm = 'sysparm_article=' + kbNumber;
         var url = base + '/api/now/table/kb_knowledge' +
             '?sysparm_query=textCONTAINS' + encodeURIComponent(searchTerm) +
@@ -412,7 +394,6 @@
             overflow: 'hidden',
         });
 
-        // Title bar
         var titleBar = document.createElement('div');
         Object.assign(titleBar.style, {
             background: COLORS.bgSecondary,
@@ -471,7 +452,6 @@
         titleBar.appendChild(titleLeft);
         titleBar.appendChild(closeBtn);
 
-        // Content area
         var contentArea = document.createElement('div');
         contentArea.id = 'kb-reverse-content';
         Object.assign(contentArea.style, {
@@ -481,7 +461,6 @@
             padding: '12px 16px',
         });
 
-        // Loading spinner
         var loading = document.createElement('div');
         loading.id = 'kb-reverse-loading';
         Object.assign(loading.style, {
@@ -506,7 +485,6 @@
         loading.appendChild(spinner);
         loading.appendChild(loadingText);
 
-        // Footer
         var footer = document.createElement('div');
         footer.id = 'kb-reverse-footer';
         Object.assign(footer.style, {
@@ -550,12 +528,10 @@
 
         overlay.appendChild(panel);
 
-        // Keyframe animation
         var style = document.createElement('style');
         style.textContent = '@keyframes kb-reverse-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }';
         document.head.appendChild(style);
 
-        // Close on overlay click
         overlay.addEventListener('click', function (e) {
             if (e.target === overlay) hidePanel();
         });
@@ -594,7 +570,6 @@
         var area = panelElements.contentArea;
         clearChildren(area);
 
-        // Determine which hyperlink refs are NOT already in the kb_2_kb results
         var kb2kbNumbers = new Set();
         for (var k = 0; k < state.reverseKbLinks.length; k++) {
             kb2kbNumbers.add(state.reverseKbLinks[k].number);
@@ -603,7 +578,6 @@
             return !kb2kbNumbers.has(item.number);
         });
 
-        // KB Articles section (from kb_2_kb relationship table)
         renderSection(area, {
             title: 'Related articles (kb_2_kb) \u2014 ' + state.reverseKbLinks.length,
             subtitle: 'Explicit relationships defined in ServiceNow',
@@ -619,12 +593,10 @@
             },
         });
 
-        // Spacer
         var spacer1 = document.createElement('div');
         spacer1.style.height = '16px';
         area.appendChild(spacer1);
 
-        // Hyperlink references section (from text search)
         renderSection(area, {
             title: 'Linked from articles (hyperlinks) \u2014 ' + hyperlinkOnly.length,
             subtitle: 'Articles whose body text contains a hyperlink to this article',
@@ -638,12 +610,10 @@
             },
         });
 
-        // Spacer
         var spacer2 = document.createElement('div');
         spacer2.style.height = '16px';
         area.appendChild(spacer2);
 
-        // Tasks section
         renderSection(area, {
             title: 'Applied to tasks \u2014 ' + state.reverseTaskLinks.length,
             subtitle: 'Tasks where this article was applied (m2m_kb_task)',
@@ -659,14 +629,12 @@
             },
         });
 
-        // Update footer
         var total = state.reverseKbLinks.length + hyperlinkOnly.length + state.reverseTaskLinks.length;
         panelElements.footerInfo.textContent = total + ' reference' + (total !== 1 ? 's' : '') +
             ' \u2022 ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
     function renderSection(parent, opts) {
-        // Section header
         var header = document.createElement('div');
         Object.assign(header.style, {
             fontSize: '12px',
@@ -687,7 +655,6 @@
         }
         parent.appendChild(header);
 
-        // Subtitle / explanation
         if (opts.subtitle) {
             var sub = document.createElement('div');
             Object.assign(sub.style, {
@@ -703,7 +670,6 @@
             parent.appendChild(sub);
         }
 
-        // Divider
         var divider = document.createElement('div');
         Object.assign(divider.style, {
             height: '1px',
@@ -712,7 +678,6 @@
         });
         parent.appendChild(divider);
 
-        // Error state
         if (opts.error) {
             var errorEl = document.createElement('div');
             Object.assign(errorEl.style, {
@@ -726,7 +691,6 @@
             return;
         }
 
-        // Empty state
         if (!opts.items || opts.items.length === 0) {
             var emptyEl = document.createElement('div');
             Object.assign(emptyEl.style, {
@@ -740,7 +704,6 @@
             return;
         }
 
-        // Items
         for (var i = 0; i < opts.items.length; i++) {
             var row = opts.renderItem(opts.items[i]);
             parent.appendChild(row);
@@ -760,7 +723,6 @@
         row.onmouseover = function () { row.style.background = 'rgba(255,255,255,0.05)'; };
         row.onmouseout = function () { row.style.background = 'transparent'; };
 
-        // Color dot
         var dot = document.createElement('span');
         Object.assign(dot.style, {
             width: '8px',
@@ -772,7 +734,6 @@
         });
         row.appendChild(dot);
 
-        // Number
         var numEl = document.createElement('span');
         Object.assign(numEl.style, {
             fontWeight: '500',
@@ -783,7 +744,6 @@
         numEl.textContent = number;
         row.appendChild(numEl);
 
-        // Title
         var titleEl = document.createElement('span');
         Object.assign(titleEl.style, {
             flex: '1',
@@ -797,7 +757,6 @@
         titleEl.title = title;
         row.appendChild(titleEl);
 
-        // Badge (for task type)
         if (badge) {
             var badgeEl = document.createElement('span');
             Object.assign(badgeEl.style, {
@@ -813,7 +772,6 @@
             row.appendChild(badgeEl);
         }
 
-        // Open link icon
         var openIcon = document.createElement('a');
         openIcon.href = url;
         openIcon.target = '_blank';
@@ -830,7 +788,6 @@
         openIcon.title = 'Open in new tab';
         row.appendChild(openIcon);
 
-        // Click on row opens link
         row.onclick = function (e) {
             if (e.target === openIcon || e.target.tagName === 'A') return;
             window.open(url, '_blank');
@@ -843,15 +800,10 @@
 
     async function initializeReverseLinks() {
         var kbNumber = getKbNumber();
-        if (!kbNumber) {
-            renderError('Could not detect KB article number.');
+        var sysId = getSysId();
+        if (!kbNumber && !sysId) {
+            renderError('Could not detect KB article identification.');
             return;
-        }
-        state.kbNumber = kbNumber;
-        state.kbTitle = getArticleTitle();
-
-        if (panelElements) {
-            panelElements.titleText.textContent = 'Reverse Links \u2014 ' + kbNumber;
         }
 
         setLoading(true);
@@ -859,11 +811,12 @@
         state.hyperlinkError = null;
         state.taskError = null;
 
-        // Step 1: Resolve sys_id
         var articleInfo;
         try {
-            articleInfo = await resolveArticleSysId(kbNumber);
+            articleInfo = await resolveArticleInfo(kbNumber, sysId);
             state.sysId = articleInfo.sysId;
+            state.kbNumber = articleInfo.number;
+            state.kbTitle = articleInfo.title;
         } catch (e) {
             setLoading(false);
             if (e.status === 401 || e.status === 403) {
@@ -874,16 +827,17 @@
             return;
         }
 
-        // Step 2: Discover kb_2_kb fields (can fail gracefully)
+        if (panelElements) {
+            panelElements.titleText.textContent = 'Reverse Links \u2014 ' + state.kbNumber;
+        }
+
         var kb2kbFields = null;
         try {
             kb2kbFields = await discoverKb2KbFields();
         } catch (e) {
             state.kbError = 'KB relationship table unavailable (' + (e.status || e.message) + ')';
-            console.warn('KB Reverse Links: kb_2_kb discovery failed:', e.message);
         }
 
-        // Step 3: Fetch all three sets of reverse links in parallel
         var kbPromise = kb2kbFields
             ? fetchReverseKbLinks(state.sysId, kb2kbFields.fieldA, kb2kbFields.fieldB)
                 .catch(function (e) {
@@ -892,7 +846,7 @@
                 })
             : Promise.resolve({ links: [], totalCount: 0 });
 
-        var hyperlinkPromise = fetchReverseHyperlinkRefs(kbNumber)
+        var hyperlinkPromise = fetchReverseHyperlinkRefs(state.kbNumber)
             .catch(function (e) {
                 state.hyperlinkError = 'Could not search article bodies: ' + e.message;
                 return { links: [], totalCount: 0 };
@@ -936,7 +890,7 @@
 
     async function handleRefresh() {
         state.initialized = false;
-        cachedKb2KbFields = null; // re-discover in case schema changed
+        cachedKb2KbFields = null;
         await initializeReverseLinks();
     }
 
@@ -992,6 +946,5 @@
         document.body.appendChild(btn);
     }
 
-    // ─── Entry Point ────────────────────────────────────────────
     setTimeout(addToggleButton, 3000);
 })();

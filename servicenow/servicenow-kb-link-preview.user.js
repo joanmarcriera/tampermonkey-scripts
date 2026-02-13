@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ServiceNow KB Link Preview
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.2
-// @description  Show a snippet and health status when hovering over KB article links
+// @version      1.3
+// @description  Show a snippet and health status when hovering over KB article links. Supports sys_id links.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_view.do*
 // @match        *://*/kb_article.do*
@@ -31,7 +31,7 @@
     };
 
     let hoverTimer = null;
-    let currentKb = null;
+    let currentId = null; // Can be KB number or sys_id
     const cache = new Map();
 
     function getAuthToken() {
@@ -112,10 +112,11 @@
         return popup;
     }
 
-    async function fetchArticleData(kbNumber) {
-        if (cache.has(kbNumber)) return cache.get(kbNumber);
+    async function fetchArticleData(id) {
+        if (cache.has(id)) return cache.get(id);
 
-        const url = `${window.location.origin}/api/now/table/kb_knowledge?sysparm_query=number=${kbNumber}&sysparm_fields=short_description,text,workflow_state,sys_updated_on,number&sysparm_limit=1`;
+        let query = id.startsWith('KB') ? `number=${id}` : `sys_id=${id}`;
+        const url = `${window.location.origin}/api/now/table/kb_knowledge?sysparm_query=${encodeURIComponent(query)}&sysparm_fields=short_description,text,workflow_state,sys_updated_on,number,sys_id&sysparm_limit=1`;
 
         try {
             const response = await fetch(url, {
@@ -128,7 +129,10 @@
             const data = await response.json();
             if (data.result && data.result.length > 0) {
                 const article = data.result[0];
-                cache.set(kbNumber, article);
+                cache.set(id, article);
+                // Also cache by the other identifier if available
+                if (article.number) cache.set(article.number, article);
+                if (article.sys_id) cache.set(article.sys_id, article);
                 return article;
             }
         } catch (e) {
@@ -163,13 +167,11 @@
             for (const child of children) {
                 if (child.nodeType === 1) { // Element
                     if (allowedTags.includes(child.tagName)) {
-                        // Keep tag, clean attributes
                         while (child.attributes && child.attributes.length > 0) {
                             child.removeAttribute(child.attributes[0].name);
                         }
                         process(child);
                     } else {
-                        // Unroll tag: replace child with its own children
                         process(child);
                         while (child.firstChild) {
                             node.insertBefore(child.firstChild, child);
@@ -202,13 +204,12 @@
             </div>
             <div class="kb-preview-snippet">${cleanedSnippet}</div>
             <div class="kb-preview-footer">
-                <span>${article.number}</span>
-                <span>State: ${article.workflow_state}</span>
+                <span>${article.number || ''}</span>
+                <span>State: ${article.workflow_state || 'unknown'}</span>
             </div>
         `;
 
-        // Set title safely
-        popup.querySelector('.kb-preview-title').textContent = article.short_description;
+        popup.querySelector('.kb-preview-title').textContent = article.short_description || 'No Title';
 
         const x = e.clientX + 15;
         const y = e.clientY + 15;
@@ -217,7 +218,6 @@
         popup.style.top = `${y}px`;
         popup.style.display = 'block';
 
-        // Adjust if it goes off screen
         const rect = popup.getBoundingClientRect();
         if (rect.right > window.innerWidth) {
             popup.style.left = `${window.innerWidth - rect.width - 20}px`;
@@ -231,7 +231,7 @@
         const popup = document.getElementById(PREVIEW_ID);
         if (popup) popup.style.display = 'none';
         clearTimeout(hoverTimer);
-        currentKb = null;
+        currentId = null;
     }
 
     function attachListeners() {
@@ -242,22 +242,29 @@
             const href = anchor.getAttribute('href');
             if (!href) return;
 
-            let kbNumber = null;
+            let kbId = null;
             try {
                 const url = new URL(href, window.location.origin);
-                kbNumber = url.searchParams.get('sysparm_article') || url.searchParams.get('number');
-                if (!kbNumber && (url.pathname.includes('kb_view.do') || url.pathname.includes('kb_article'))) {
+                const kbNum = url.searchParams.get('sysparm_article') || url.searchParams.get('number');
+                const sysId = url.searchParams.get('sys_id') || url.searchParams.get('sysparm_sys_id');
+                const pageId = url.searchParams.get('id');
+
+                if (kbNum && /^KB\d+$/.test(kbNum)) {
+                    kbId = kbNum;
+                } else if (sysId && (pageId === 'kb_article' || url.pathname.includes('kb_article'))) {
+                    kbId = sysId;
+                } else if (url.pathname.includes('kb_view.do') || url.pathname.includes('kb_article')) {
                     const match = anchor.innerText.match(/\bKB\d+\b/);
-                    if (match) kbNumber = match[0];
+                    if (match) kbId = match[0];
                 }
             } catch (err) {}
 
-            if (kbNumber && /^KB\d+$/.test(kbNumber)) {
-                currentKb = kbNumber;
+            if (kbId) {
+                currentId = kbId;
                 hoverTimer = setTimeout(async () => {
-                    if (currentKb === kbNumber) {
-                        const article = await fetchArticleData(kbNumber);
-                        if (article && currentKb === kbNumber) {
+                    if (currentId === kbId) {
+                        const article = await fetchArticleData(kbId);
+                        if (article && currentId === kbId) {
                             showPopup(e, article);
                         }
                     }
