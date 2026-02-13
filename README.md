@@ -13,11 +13,11 @@ A collection of [Tampermonkey](https://www.tampermonkey.net/) userscripts that e
 | [KB Graph View](#-kb-graph-view) | Obsidian-like interactive graph of linked KB articles | 1.2 |
 | [KB Reverse Links](#-kb-reverse-links) | Show which KB articles and tasks reference the current article | 1.0 |
 | [KB Obsidian Export](#-kb-obsidian-export) | Export KB articles to Obsidian-flavoured Markdown | 1.2 |
-| [KB Health Badge](#-kb-health-badge) | Show a quick freshness/ownership health badge for the current article | 1.0 |
+| [KB Health Badge](#-kb-health-badge) | Show a quick freshness/ownership health badge for the current article | 1.1 |
 | [KB Link Linter](#-kb-link-linter) | Detect malformed, duplicate, and dead KB links in the current article | 1.0 |
-| [KB Link Preview](#-kb-link-preview) | Hover preview with health status and content snippet | 1.2 |
+| [KB Link Preview](#-kb-link-preview) | Hover preview with health status and content snippet | 1.3 |
 | [KB Content Merger](#-kb-content-merger) | Copy clean HTML from linked articles directly in the editor | 1.1 |
-| [KB Thin Content Detector](#-kb-thin-content-detector) | Identify noise, short articles, and dead ends | 1.0 |
+| [KB Thin Content Detector](#-kb-thin-content-detector) | Identify noise, short articles, and dead ends | 1.1 |
 
 ---
 

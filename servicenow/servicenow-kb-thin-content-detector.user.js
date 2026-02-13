@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ServiceNow KB Thin Content Detector
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.0
-// @description  Detects "thin" articles and "dead ends" (no outgoing links) to help lean out documentation
+// @version      1.1
+// @description  Detects "thin" articles and "dead ends" (no outgoing links) to help lean out documentation. Supports ESC Portal.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_view.do*
 // @match        *://*/kb_article.do*
@@ -31,11 +31,19 @@
     };
 
     function getArticleContent() {
+        // Backend view
         const original = document.getElementById('articleOriginal');
         if (original && original.value) return original.value;
 
         const article = document.getElementById('article');
         if (article && article.innerHTML) return article.innerHTML;
+
+        // Portal view
+        const portalContent = document.querySelector('.kb-article-content') ||
+                            document.querySelector('.kb-article-body') ||
+                            document.querySelector('article .kb-content') ||
+                            document.querySelector('.article-content');
+        if (portalContent && portalContent.innerHTML) return portalContent.innerHTML;
 
         return '';
     }
@@ -53,7 +61,7 @@
         const anchors = temp.querySelectorAll('a[href]');
         for (const a of anchors) {
             const href = a.getAttribute('href');
-            if (href && (href.includes('kb_view.do') || href.includes('kb_article.do') || href.includes('sysparm_article=KB'))) {
+            if (href && (href.includes('kb_view.do') || href.includes('kb_article') || href.includes('sysparm_article=KB'))) {
                 return true;
             }
         }
