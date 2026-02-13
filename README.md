@@ -18,6 +18,7 @@ A collection of [Tampermonkey](https://www.tampermonkey.net/) userscripts that e
 | [KB Link Preview](#-kb-link-preview) | Hover preview with health status and content snippet | 1.3 |
 | [KB Content Merger](#-kb-content-merger) | Copy clean HTML from linked articles directly in the editor | 1.1 |
 | [KB Thin Content Detector](#-kb-thin-content-detector) | Identify noise, short articles, and dead ends | 1.1 |
+| [KB List Enricher](#-kb-list-enricher) | Enrich KB search results with metrics (in/out links, words) | 1.0 |
 
 ---
 
@@ -61,6 +62,7 @@ Click the raw file link for each script below. Tampermonkey will detect it and o
 - [`servicenow-kb-link-preview.user.js`](servicenow/servicenow-kb-link-preview.user.js)
 - [`servicenow-kb-content-merger.user.js`](servicenow/servicenow-kb-content-merger.user.js)
 - [`servicenow-kb-thin-content-detector.user.js`](servicenow/servicenow-kb-thin-content-detector.user.js)
+- [`servicenow-kb-list-enricher.user.js`](servicenow/servicenow-kb-list-enricher.user.js)
 
 > **Note:** For the direct-install to work the file must have a `.user.js` extension and be served as raw content.
 
@@ -271,6 +273,22 @@ Automatically analyzes articles to identify "documentation noise" and navigation
 - **Word Count Scale** — color-coded badges for Critical Noise (<100 words), Very Thin (<200), and Thin (<300)
 - **Dead End Detection** — flags articles that contain no outgoing links to other KB articles
 - **Lean Motivation** — highlights candidates for merging or deletion to keep the Knowledge Base lean
+
+---
+
+### KB List Enricher
+
+**File:** [`servicenow/servicenow-kb-list-enricher.user.js`](servicenow/servicenow-kb-list-enricher.user.js)
+
+Enriches the Knowledge Base home page and search results with live metrics for each article, aiding in the "lean documentation" audit.
+
+#### Features
+
+- **In-Link Counter** (📥) — shows the number of explicit relationships pointing to this article
+- **Out-Link Counter** (📤) — shows how many other KB articles are linked within this article's body
+- **Word Counter** (📝) — displays the article's total word count, highlighting "Critical Noise" (<100 words) in red
+- **Broken Link Detection** (❌) — flags malformed or empty links within the article body
+- **Batch Processing** — efficiently fetches data for multiple articles in the list view
 
 ---
 
