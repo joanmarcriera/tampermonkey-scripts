@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ServiceNow KB List Enricher
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.3
+// @version      1.4
 // @description  Enrich KB list view with metrics: in-links, out-links, word count, and malformed links. Handles dynamic Angular content.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/$knowledge.do*
@@ -9,6 +9,8 @@
 // @match        *://*/kb_knowledge_home.do*
 // @match        *://*/kb_home.do*
 // @match        *://*/kb_find.do*
+// @match        *://*/now/nav/ui/classic/params/target/%24knowledge.do*
+// @match        *://*/now/nav/ui/classic/params/target/$knowledge.do*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-list-enricher.user.js
 // @downloadURL  https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-list-enricher.user.js
@@ -30,6 +32,25 @@
         INITIAL_DELAY_MS: 2000,
     };
 
+    // ServiceNow classic UI wraps $knowledge.do inside a gsft_main iframe.
+    // Detect whether we need to target the iframe document or the current document.
+    function getTargetContext() {
+        const iframe = document.querySelector('iframe[name="gsft_main"]');
+        if (iframe) {
+            try {
+                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                const iframeWin = iframe.contentWindow;
+                if (iframeDoc && iframeWin) {
+                    return { doc: iframeDoc, win: iframeWin };
+                }
+            } catch (e) {
+                // Cross-origin iframe — fall back to current document
+                console.warn('KB Enricher: Cannot access iframe (cross-origin). Falling back to current document.');
+            }
+        }
+        return { doc: document, win: window };
+    }
+
     const LINK_SELECTORS = [
         'a[href*="sys_kb_id"]',
         'a[href*="kb_view.do"]',
@@ -39,12 +60,13 @@
     ];
 
     function getAuthToken() {
-        return window.g_ck || '';
+        const ctx = getTargetContext();
+        return ctx.win.g_ck || window.g_ck || '';
     }
 
-    function ensureStyles() {
-        if (document.getElementById(STYLE_ID)) return;
-        const style = document.createElement('style');
+    function ensureStyles(targetDoc) {
+        if (targetDoc.getElementById(STYLE_ID)) return;
+        const style = targetDoc.createElement('style');
         style.id = STYLE_ID;
         style.textContent = `
             .${BADGE_CLASS} {
@@ -73,7 +95,7 @@
 
             .kb-metric-words.critical { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; font-weight: bold; }
         `;
-        document.head.appendChild(style);
+        (targetDoc.head || targetDoc.documentElement).appendChild(style);
     }
 
     function chunkArray(items, size) {
@@ -228,8 +250,10 @@
             return;
         }
 
+        const ctx = getTargetContext();
+        const targetDoc = ctx.doc;
         const selector = buildSelector();
-        const anchors = Array.from(document.querySelectorAll(selector));
+        const anchors = Array.from(targetDoc.querySelectorAll(selector));
 
         if (anchors.length === 0) return;
 
@@ -237,7 +261,7 @@
         isRunning = true;
 
         try {
-            ensureStyles();
+            ensureStyles(targetDoc);
 
             const idMap = new Map();
             const articleIds = [];
@@ -295,16 +319,61 @@
         debounceTimer = setTimeout(enrichList, CONFIG.DEBOUNCE_MS);
     }
 
-    const observer = new MutationObserver((mutations) => {
-        for (const mutation of mutations) {
-            if (mutation.addedNodes.length > 0) {
-                scheduleEnrich();
-                return;
+    function observeTarget(targetDoc) {
+        const body = targetDoc.body;
+        if (!body) return;
+        const obs = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.addedNodes.length > 0) {
+                    scheduleEnrich();
+                    return;
+                }
+            }
+        });
+        obs.observe(body, { childList: true, subtree: true });
+        return obs;
+    }
+
+    // Observe the current document
+    observeTarget(document);
+
+    // If we're on the outer navigation page, also watch for the iframe to load
+    // and observe inside it once ready
+    function setupIframeObserver() {
+        const iframe = document.querySelector('iframe[name="gsft_main"]');
+        if (iframe) {
+            const tryObserve = () => {
+                try {
+                    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                    if (iframeDoc && iframeDoc.body) {
+                        console.log('KB Enricher: Observing gsft_main iframe.');
+                        observeTarget(iframeDoc);
+                        scheduleEnrich();
+                        return true;
+                    }
+                } catch (e) {
+                    // Cross-origin or not ready
+                }
+                return false;
+            };
+            if (!tryObserve()) {
+                iframe.addEventListener('load', () => {
+                    tryObserve();
+                });
             }
         }
-    });
+    }
 
-    observer.observe(document.body, { childList: true, subtree: true });
+    setupIframeObserver();
+
+    // Also watch for the iframe being added dynamically (SPA navigation)
+    const parentObserver = new MutationObserver(() => {
+        const iframe = document.querySelector('iframe[name="gsft_main"]');
+        if (iframe) {
+            setupIframeObserver();
+        }
+    });
+    parentObserver.observe(document.body, { childList: true, subtree: true });
 
     // Initial run with longer delay for Angular bootstrap
     setTimeout(scheduleEnrich, CONFIG.INITIAL_DELAY_MS);
