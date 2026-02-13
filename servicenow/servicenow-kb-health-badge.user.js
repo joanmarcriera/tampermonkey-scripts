@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         ServiceNow KB Health Badge
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.0
-// @description  Show a quick KB health badge (Fresh, Review Soon, Stale) with owner, state, and version metadata
+// @version      1.1
+// @description  Show a quick KB health badge (Fresh, Review Soon, Stale) with owner, state, and version metadata. Supports ESC Portal.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_view.do*
 // @match        *://*/kb_article.do*
 // @match        *://*/esc?id=kb_article*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-health-badge.user.js
+// @downloadURL  https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-health-badge.user.js
 // ==/UserScript==
 
 (function () {
@@ -46,6 +48,8 @@
         },
     };
 
+    const cache = new Map();
+
     function normalizeText(text) {
         return String(text || '').replace(/\s+/g, ' ').trim();
     }
@@ -72,28 +76,75 @@
         const fromUrl = params.get('sysparm_article') || params.get('number');
         if (fromUrl && /^KB\d+$/i.test(fromUrl)) return fromUrl.toUpperCase();
 
+        // Portal specific fallback - sometimes the number is in a span with certain class
+        const portalSpan = queryText('.kb-number');
+        if (portalSpan && /^KB\d+$/i.test(portalSpan)) return portalSpan.toUpperCase();
+
         return '';
     }
 
+    function getSysId() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('sys_id') || params.get('sysparm_sys_id') || '';
+    }
+
+    function getAuthToken() {
+        return window.g_ck || '';
+    }
+
+    async function fetchMetadata(kbNumber, sysId) {
+        const cacheKey = kbNumber || sysId;
+        if (cache.has(cacheKey)) return cache.get(cacheKey);
+
+        let query = sysId ? `sys_id=${sysId}` : `number=${kbNumber}`;
+        const url = `${window.location.origin}/api/now/table/kb_knowledge?sysparm_query=${encodeURIComponent(query)}&sysparm_fields=short_description,author.name,sys_updated_on,workflow_state,version,number,sys_id&sysparm_limit=1`;
+
+        try {
+            const response = await fetch(url, {
+                headers: {
+                    'Accept': 'application/json',
+                    'X-UserToken': getAuthToken()
+                }
+            });
+            if (!response.ok) return null;
+            const data = await response.json();
+            if (data.result && data.result.length > 0) {
+                const res = data.result[0];
+                const meta = {
+                    number: res.number,
+                    author: res['author.name'] || 'Unknown',
+                    updatedOn: res.sys_updated_on,
+                    state: res.workflow_state,
+                    version: res.version || '1.0'
+                };
+                cache.set(cacheKey, meta);
+                return meta;
+            }
+        } catch (e) {
+            console.error('KB Health Badge API error:', e);
+        }
+        return null;
+    }
+
     function getOwnerText() {
-        const raw = queryText('#articleAuthor');
-        if (!raw) return 'Unknown';
+        const raw = queryText('#articleAuthor') || queryText('.kb-author');
+        if (!raw) return '';
         return raw.replace(/^(Revised|Created|Authored)\s+by\s+/i, '').trim() || raw;
     }
 
     function getVersionText() {
-        const displayVersion = queryText('#versionNumber');
+        const displayVersion = queryText('#versionNumber') || queryText('.kb-version');
         if (displayVersion) return displayVersion;
 
         const rawVersion = queryValue('#articleVersion');
         if (rawVersion) return 'v' + rawVersion;
 
-        return 'Unknown';
+        return '';
     }
 
     function getWorkflowState() {
-        const state = queryValue('#articleWorkflowState');
-        return state ? state.toLowerCase() : 'unknown';
+        const state = queryValue('#articleWorkflowState') || queryText('.kb-state');
+        return state ? state.toLowerCase() : '';
     }
 
     function parseRelativeDays(raw) {
@@ -103,7 +154,7 @@
         if (text.includes('today') || text.includes('just now')) return 0;
         if (text.includes('yesterday')) return 1;
 
-        const match = text.match(/(\d+)\s+(minute|hour|day|week|month|year)s?\s+ago/);
+        const match = text.match(/(\d+)\s+(minute|hour|day|week|month|year|mo)s?\s+ago/);
         if (!match) return null;
 
         const count = parseInt(match[1], 10);
@@ -113,45 +164,24 @@
         if (unit === 'minute' || unit === 'hour') return 0;
         if (unit === 'day') return count;
         if (unit === 'week') return count * 7;
-        if (unit === 'month') return count * 30;
+        if (unit === 'month' || unit === 'mo') return count * 30;
         if (unit === 'year') return count * 365;
 
         return null;
     }
 
-    function parseDaysFromVersionHistory() {
-        const text = queryText('#versions-list b');
-        if (!text) return null;
-
-        const dateMatch = text.match(/(Last modified on|Created on)\s+(\d{4}-\d{2}-\d{2})/i);
-        if (!dateMatch) return null;
-
-        const date = new Date(dateMatch[2] + 'T00:00:00');
-        if (Number.isNaN(date.getTime())) return null;
-
-        const now = new Date();
-        const days = Math.floor((now.getTime() - date.getTime()) / 86400000);
-        return Math.max(0, days);
-    }
-
     function estimateLastModifiedDays() {
-        const relative = queryText('#articleModifiedLabel');
+        const relative = queryText('#articleModifiedLabel') || queryText('.kb-updated');
         const relativeDays = parseRelativeDays(relative);
         if (relativeDays !== null) {
             return { days: relativeDays, label: relative || relativeDays + ' days ago' };
         }
-
-        const historyDays = parseDaysFromVersionHistory();
-        if (historyDays !== null) {
-            return { days: historyDays, label: historyDays + ' days ago' };
-        }
-
-        return { days: null, label: relative || 'Unknown' };
+        return { days: null, label: relative || '' };
     }
 
     function chooseStatus(days, state) {
         if (state === 'retired' || state === 'pending_retirement') return 'stale';
-        if (state !== 'published' && state !== 'unknown') {
+        if (state !== 'published' && state && state !== 'unknown') {
             if (days !== null && days > 180) return 'stale';
             return 'review';
         }
@@ -254,21 +284,40 @@
         return card;
     }
 
-    function renderBadge() {
-        const kbNumber = getKbNumber();
-        if (!kbNumber) return;
+    async function renderBadge() {
+        let kbNumber = getKbNumber();
+        let sysId = getSysId();
+        if (!kbNumber && !sysId) return;
 
-        const owner = getOwnerText();
-        const version = getVersionText();
-        const state = getWorkflowState();
-        const modified = estimateLastModifiedDays();
+        let owner = getOwnerText();
+        let version = getVersionText();
+        let state = getWorkflowState();
+        let modified = estimateLastModifiedDays();
+
+        // If we're missing critical info (common on Portal), fetch from API
+        if (!owner || !state || modified.days === null) {
+            const apiData = await fetchMetadata(kbNumber, sysId);
+            if (apiData) {
+                kbNumber = apiData.number || kbNumber;
+                owner = apiData.author || owner || 'Unknown';
+                version = apiData.version || version || '1.0';
+                state = apiData.state || state || 'unknown';
+
+                if (modified.days === null && apiData.updatedOn) {
+                    const date = new Date(apiData.updatedOn.replace(' ', 'T'));
+                    const diffDays = Math.floor((new Date() - date) / 86400000);
+                    modified = { days: diffDays, label: diffDays + ' days ago' };
+                }
+            }
+        }
+
         const statusKey = chooseStatus(modified.days, state);
         const status = STATUS[statusKey] || STATUS.unknown;
-        const safeKb = escapeHtml(kbNumber);
-        const safeOwner = escapeHtml(owner);
-        const safeModified = escapeHtml(modified.label);
-        const safeVersion = escapeHtml(version);
-        const safeState = escapeHtml(titleCase(state));
+        const safeKb = escapeHtml(kbNumber || 'KB');
+        const safeOwner = escapeHtml(owner || 'Unknown');
+        const safeModified = escapeHtml(modified.label || 'Unknown');
+        const safeVersion = escapeHtml(version || 'Unknown');
+        const safeState = escapeHtml(titleCase(state || 'Unknown'));
 
         ensureStyles();
         const card = getOrCreateCard();
@@ -293,7 +342,7 @@
         let tries = 0;
         const timer = setInterval(function () {
             tries += 1;
-            if (getKbNumber()) {
+            if (getKbNumber() || getSysId()) {
                 clearInterval(timer);
                 renderBadge();
                 setInterval(renderBadge, REFRESH_MS);

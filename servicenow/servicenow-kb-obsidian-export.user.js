@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         ServiceNow KB → Obsidian Markdown Export (Clean Content)
 // @namespace    https://example.com/snow-kb-obsidian-clean
-// @version      1.2
-// @description  Export ServiceNow KB article to Obsidian Markdown using clean article body (no UI/scripts), with named links
+// @version      1.3
+// @description  Export ServiceNow KB article to Obsidian Markdown using clean article body. Supports ESC Portal.
 // @match        *://*/kb_view.do*
 // @match        *://*/kb_article.do*
+// @match        *://*/esc?id=kb_article*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-obsidian-export.user.js
+// @downloadURL  https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-obsidian-export.user.js
 // ==/UserScript==
 
 (function () {
@@ -14,13 +17,20 @@
     function getKbNumber() {
         const el = document.getElementById('articleNumberReadonly');
         if (el && el.textContent.trim()) {
-            return el.textContent.trim().split(/\s+/)[0]; // e.g. KB0011539
+            return el.textContent.trim().split(/\s+/)[0];
         }
+        const params = new URLSearchParams(window.location.search);
+        const kbNum = params.get('sysparm_article') || params.get('number');
+        if (kbNum && kbNum.startsWith('KB')) return kbNum;
+
+        const portalSpan = document.querySelector('.kb-number');
+        if (portalSpan && portalSpan.textContent.trim().startsWith('KB')) return portalSpan.textContent.trim();
+
         return null;
     }
 
     function getArticleTitle() {
-        const el = document.getElementById('articleTitleReadonly');
+        const el = document.getElementById('articleTitleReadonly') || document.querySelector('.kb-title');
         if (el && el.textContent.trim()) {
             return el.textContent.trim();
         }
@@ -37,10 +47,15 @@
 
     function getArticleOriginalHtml() {
         const el = document.getElementById('articleOriginal');
-        if (!el || !el.value) {
-            return '';
-        }
-        return el.value;
+        if (el && el.value) return el.value;
+
+        const portalContent = document.querySelector('.kb-article-content') ||
+                            document.querySelector('.kb-article-body') ||
+                            document.querySelector('article .kb-content') ||
+                            document.querySelector('.article-content');
+        if (portalContent) return portalContent.innerHTML;
+
+        return '';
     }
 
     function parseArticleHtml(html) {
@@ -70,16 +85,17 @@
 
             const hrefStr = url.href;
 
-            // KB links
             if (hrefStr.includes('kb_view.do') || hrefStr.includes('kb_article')) {
-                const kb = url.searchParams.get('sysparm_article');
-                if (kb && kb.startsWith('KB')) {
-                    kbLinks.push({ kb, label });
+                const kb = url.searchParams.get('sysparm_article') || url.searchParams.get('number');
+                const sysId = url.searchParams.get('sys_id') || url.searchParams.get('sysparm_sys_id');
+                const id = (kb && kb.startsWith('KB')) ? kb : sysId;
+
+                if (id) {
+                    kbLinks.push({ kb: id, label });
                     continue;
                 }
             }
 
-            // ServiceNow incidents / catalog / tasks
             if (
                 hrefStr.includes('incident.do') ||
                 hrefStr.includes('sc_cat_item') ||
@@ -89,7 +105,6 @@
                 continue;
             }
 
-            // Google Docs
             if (hrefStr.includes('docs.google.com')) {
                 googleLinks.push({ url: hrefStr, label });
                 continue;
@@ -100,11 +115,9 @@
     }
 
     function extractCleanTextFromDoc(doc) {
-        // Remove any scripts/styles just in case (articleOriginal should not have them, but be defensive)
         const scripts = doc.querySelectorAll('script, style');
         scripts.forEach(n => n.remove());
 
-        // Get readable text
         const text = doc.body.innerText || '';
         return text.trim();
     }
@@ -112,7 +125,6 @@
     function buildMarkdown(kbNumber, title, links, articleText) {
         const lines = [];
 
-        // Frontmatter
         lines.push('---');
         lines.push(`title: ${title}`);
         if (kbNumber) lines.push(`kb: ${kbNumber}`);
@@ -120,7 +132,6 @@
         lines.push('---');
         lines.push('');
 
-        // Header
         lines.push(`# ${title}`);
         lines.push('');
         if (kbNumber) {
@@ -128,7 +139,6 @@
             lines.push('');
         }
 
-        // KB links
         lines.push('## Linked Knowledge Base Articles');
         lines.push('');
         if (links.kbLinks.length === 0) {
@@ -144,7 +154,6 @@
         }
         lines.push('');
 
-        // ServiceNow links
         lines.push('## Related Incidents / ServiceNow Records');
         lines.push('');
         if (links.incidentLinks.length === 0) {
@@ -159,7 +168,6 @@
         }
         lines.push('');
 
-        // Google Docs
         lines.push('## Related Google Documents');
         lines.push('');
         if (links.googleLinks.length === 0) {
@@ -174,7 +182,6 @@
         }
         lines.push('');
 
-        // Article content
         lines.push('## Article Content');
         lines.push('');
         lines.push(articleText || '_No content extracted._');
@@ -214,7 +221,7 @@
 
             const rawHtml = getArticleOriginalHtml();
             if (!rawHtml) {
-                alert('Could not find articleOriginal content.');
+                alert('Could not find article content.');
                 return;
             }
 
@@ -229,19 +236,10 @@
             const filename = `${baseName}.md`;
 
             downloadMarkdown(filename, md);
-
-            alert(
-                `Exported clean Markdown:\n` +
-                `- ${links.kbLinks.length} KB links\n` +
-                `- ${links.incidentLinks.length} ServiceNow links\n` +
-                `- ${links.googleLinks.length} Google Docs links`
-            );
         };
 
         document.body.appendChild(btn);
     }
 
-    // Wait a bit for ServiceNow to finish rendering
     setTimeout(addButton, 3000);
 })();
-

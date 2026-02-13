@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         ServiceNow KB Graph View
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.2
-// @description  Obsidian-like graph visualization of linked ServiceNow Knowledge Base articles
+// @version      1.3
+// @description  Obsidian-like graph visualization of linked ServiceNow Knowledge Base articles. Supports ESC Portal.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_view.do*
 // @match        *://*/kb_article.do*
 // @match        *://*/esc?id=kb_article*
 // @require      https://d3js.org/d3.v7.min.js
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-graph-view.user.js
+// @downloadURL  https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-graph-view.user.js
 // ==/UserScript==
 
 (function () {
@@ -104,11 +106,23 @@
         if (el && el.textContent.trim()) {
             return el.textContent.trim().split(/\s+/)[0];
         }
+        const params = new URLSearchParams(window.location.search);
+        const kbNum = params.get('sysparm_article') || params.get('number');
+        if (kbNum && kbNum.startsWith('KB')) return kbNum;
+
+        const portalSpan = document.querySelector('.kb-number');
+        if (portalSpan && portalSpan.textContent.trim().startsWith('KB')) return portalSpan.textContent.trim();
+
         return null;
     }
 
+    function getSysId() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('sys_id') || params.get('sysparm_sys_id') || '';
+    }
+
     function getArticleTitle() {
-        const el = document.getElementById('articleTitleReadonly');
+        const el = document.getElementById('articleTitleReadonly') || document.querySelector('.kb-title');
         if (el && el.textContent.trim()) {
             return el.textContent.trim();
         }
@@ -117,8 +131,15 @@
 
     function getArticleOriginalHtml() {
         const el = document.getElementById('articleOriginal');
-        if (!el || !el.value) return '';
-        return el.value;
+        if (el && el.value) return el.value;
+
+        const portalContent = document.querySelector('.kb-article-content') ||
+                            document.querySelector('.kb-article-body') ||
+                            document.querySelector('article .kb-content') ||
+                            document.querySelector('.article-content');
+        if (portalContent) return portalContent.innerHTML;
+
+        return '';
     }
 
     function classifyExternalCategory(urlObj) {
@@ -161,11 +182,14 @@
 
             const hrefStr = url.href;
             if (hrefStr.includes('kb_view.do') || hrefStr.includes('kb_article')) {
-                const kb = url.searchParams.get('sysparm_article');
-                if (kb && kb.startsWith('KB') && !seenKb.has(kb)) {
-                    seenKb.add(kb);
-                    const label = (a.textContent || '').trim() || kb;
-                    kbLinks.push({ kb, label });
+                const kb = url.searchParams.get('sysparm_article') || url.searchParams.get('number');
+                const sysId = url.searchParams.get('sys_id') || url.searchParams.get('sysparm_sys_id');
+                const id = (kb && kb.startsWith('KB')) ? kb : sysId;
+
+                if (id && !seenKb.has(id)) {
+                    seenKb.add(id);
+                    const label = (a.textContent || '').trim() || id;
+                    kbLinks.push({ kb: id, label });
                 }
                 continue;
             }
@@ -237,7 +261,7 @@
             } catch (e) {
                 try {
                     await fetch(url, { method: 'HEAD', mode: 'no-cors', credentials: 'omit' });
-                    status = 'unknown'; // opaque response — can't determine status
+                    status = 'unknown';
                 } catch (e2) {
                     status = 'broken';
                 }
@@ -333,9 +357,10 @@
         return window.g_ck || '';
     }
 
-    async function fetchKbArticle(kbNumber) {
+    async function fetchKbArticle(id) {
         const base = window.location.origin;
-        const url = `${base}/api/now/table/kb_knowledge?sysparm_query=number=${encodeURIComponent(kbNumber)}&sysparm_fields=sys_id,number,short_description,text&sysparm_limit=1`;
+        let query = id.startsWith('KB') ? `number=${encodeURIComponent(id)}` : `sys_id=${encodeURIComponent(id)}`;
+        const url = `${base}/api/now/table/kb_knowledge?sysparm_query=${query}&sysparm_fields=sys_id,number,short_description,text&sysparm_limit=1`;
 
         const resp = await fetch(url, {
             headers: {
@@ -352,7 +377,7 @@
 
         const data = await resp.json();
         if (!data.result || data.result.length === 0) {
-            const err = new Error(`Article ${kbNumber} not found`);
+            const err = new Error(`Article ${id} not found`);
             err.status = 404;
             throw err;
         }
@@ -360,16 +385,17 @@
         const article = data.result[0];
         return {
             number: article.number,
-            title: article.short_description || kbNumber,
+            title: article.short_description || article.number || id,
             html: article.text || '',
+            sysId: article.sys_id
         };
     }
 
-    async function fetchWithRetry(kbNumber, maxRetries = 2) {
+    async function fetchWithRetry(id, maxRetries = 2) {
         let lastErr;
         for (let i = 0; i <= maxRetries; i++) {
             try {
-                return await fetchKbArticle(kbNumber);
+                return await fetchKbArticle(id);
             } catch (e) {
                 lastErr = e;
                 if (e.status === 401 || e.status === 403 || e.status === 404) throw e;
@@ -546,7 +572,6 @@
             return { newNodes, newLinks };
         }
 
-        /** Batch-fetch titles for nodes that haven't been expanded yet */
         async fetchTitlesForUnexpanded() {
             const toFetch = [];
             for (const [id, node] of this.nodes) {
@@ -591,7 +616,6 @@
                             updated.push(kbNumber);
                         }
                     }
-                    console.warn(`KB Graph: could not fetch title for ${kbNumber}`, e.message);
                 }
             });
 
@@ -599,7 +623,6 @@
             return updated;
         }
 
-        /** Get neighbors of a node */
         getNeighbors(nodeId) {
             const neighbors = [];
             for (const key of this.links) {
@@ -796,7 +819,6 @@
         _update(nodes, links) {
             const self = this;
 
-            // Links
             const linkKey = d => {
                 const s = typeof d.source === 'object' ? d.source.id : d.source;
                 const t = typeof d.target === 'object' ? d.target.id : d.target;
@@ -809,7 +831,6 @@
                 .attr('stroke-width', 1.5)
                 .attr('stroke-opacity', 0.6);
 
-            // Nodes
             const nodeSel = this.nodeGroup.selectAll('g.node').data(nodes, d => d.id);
             nodeSel.exit().remove();
             const nodeEnter = nodeSel.enter().append('g')
@@ -897,7 +918,6 @@
                 .transition().duration(250)
                 .attr('opacity', 1);
 
-            // Labels
             const labelSel = this.labelGroup.selectAll('text').data(nodes, d => d.id);
             labelSel.exit().remove();
             labelSel.enter().append('text')
@@ -1122,7 +1142,6 @@
             const isCollapsed = this.collapsedNodes.has(nodeId);
             const self = this;
 
-            // Toggle arrow
             const toggle = document.createElement('span');
             Object.assign(toggle.style, {
                 width: '16px',
@@ -1161,7 +1180,6 @@
             }
             row.appendChild(toggle);
 
-            // Color dot
             const dot = document.createElement('span');
             Object.assign(dot.style, {
                 width: '8px',
@@ -1181,7 +1199,6 @@
             }
             row.appendChild(dot);
 
-            // Label text
             const label = document.createElement('span');
             Object.assign(label.style, {
                 flex: '1',
@@ -1197,7 +1214,6 @@
             row.appendChild(label);
             this._appendStatusIcon(row, node);
 
-            // Duplicate badge
             if (isDuplicate && prevParents.length > 0) {
                 const badge = document.createElement('span');
                 Object.assign(badge.style, {
@@ -1214,7 +1230,6 @@
                 row.appendChild(badge);
             }
 
-            // Open link icon
             const openLink = document.createElement('a');
             openLink.href = getNodeOpenUrl(node);
             openLink.target = '_blank';
@@ -1234,10 +1249,8 @@
 
             parentEl.appendChild(row);
 
-            // Don't recurse for duplicates
             if (isDuplicate) return;
 
-            // Recurse children
             if (node.expanded && !isCollapsed) {
                 const currentPath = [...parentPath, nodeId];
                 for (const childId of kbChildren) {
@@ -1282,7 +1295,6 @@
             overflow: 'hidden',
         });
 
-        // Title bar
         const titleBar = document.createElement('div');
         Object.assign(titleBar.style, {
             background: COLORS.bgSecondary,
@@ -1342,7 +1354,6 @@
         titleBar.appendChild(titleLeft);
         titleBar.appendChild(closeBtn);
 
-        // Graph container
         const graphContainer = document.createElement('div');
         graphContainer.id = 'kb-graph-container';
         Object.assign(graphContainer.style, {
@@ -1351,7 +1362,6 @@
             overflow: 'hidden',
         });
 
-        // Loading overlay
         const loading = document.createElement('div');
         loading.id = 'kb-graph-loading';
         Object.assign(loading.style, {
@@ -1374,7 +1384,6 @@
         loading.appendChild(spinner);
         graphContainer.appendChild(loading);
 
-        // Footer
         const footer = document.createElement('div');
         footer.id = 'kb-graph-footer';
         Object.assign(footer.style, {
@@ -1390,7 +1399,6 @@
             gap: '8px',
         });
 
-        // Footer left: info area
         const infoArea = document.createElement('div');
         infoArea.id = 'kb-graph-info';
         Object.assign(infoArea.style, {
@@ -1401,7 +1409,6 @@
         });
         infoArea.textContent = 'Double-click a node to expand \u2022 Right-click to open';
 
-        // Footer right: controls
         const controlsRight = document.createElement('div');
         controlsRight.style.display = 'flex';
         controlsRight.style.gap = '6px';
@@ -1480,7 +1487,6 @@
         panel.appendChild(graphContainer);
         panel.appendChild(footer);
 
-        // Resize handle (bottom-right corner)
         const resizeHandle = document.createElement('div');
         Object.assign(resizeHandle.style, {
             position: 'absolute',
@@ -1503,7 +1509,6 @@
 
         overlay.appendChild(panel);
 
-        // Inject keyframe animation
         const style = document.createElement('style');
         style.textContent = [
             '@keyframes kb-graph-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }',
@@ -1512,7 +1517,6 @@
         ].join('\n');
         document.head.appendChild(style);
 
-        // Draggable title bar
         let isDragging = false, dragOffX = 0, dragOffY = 0;
         titleBar.addEventListener('mousedown', function (e) {
             isDragging = true;
@@ -1528,7 +1532,6 @@
         });
         document.addEventListener('mouseup', function () { isDragging = false; });
 
-        // Resizable via corner handle
         let isResizing = false, resizeStartX = 0, resizeStartY = 0, startW = 0, startH = 0;
         resizeHandle.addEventListener('mousedown', function (e) {
             isResizing = true;
@@ -1557,7 +1560,6 @@
             }
         });
 
-        // Close on overlay background click
         overlay.addEventListener('click', function (e) {
             if (e.target === overlay) hidePanel();
         });
@@ -1645,8 +1647,6 @@
         updateInfo(count + ' nodes, ' + linkCount + ' links \u2022 External links ' + externalOn + ' \u2022 Dbl-click expand \u2022 Right-click open');
     }
 
-    // ─── View Toggle ─────────────────────────────────────────────
-
     function switchView(view) {
         currentView = view;
         if (!panelElements) return;
@@ -1718,9 +1718,7 @@
             for (const node of graphModel.getExpandedKbNodes()) {
                 try {
                     await graphModel.addExternalsForKbNode(node.id);
-                } catch (e) {
-                    console.warn('KB Graph: could not add external links for ' + node.id, e.message);
-                }
+                } catch (e) {}
             }
             renderCurrentState();
             selectedNode = null;
@@ -1732,52 +1730,62 @@
     }
 
     async function initializeGraph() {
-        const kbNumber = getKbNumber();
+        let kbId = getKbNumber() || getSysId();
         const title = getArticleTitle();
 
-        if (!kbNumber) {
-            updateInfo('Could not detect KB article number');
+        if (!kbId) {
+            updateInfo('Could not detect KB article ID');
             return;
         }
 
-        panelElements.titleText.textContent = 'KB Graph View \u2014 ' + kbNumber;
+        panelElements.titleText.textContent = 'KB Graph View \u2014 ' + kbId;
 
         graphModel = new GraphModel();
         graphModel.showExternalLinks = !!panelElements.externalLinksCheckbox.checked;
         linkChecker = new LinkChecker();
-        graphModel.addNode(kbNumber, title, 0, 'kb');
-        graphModel.nodes.get(kbNumber).titleFetched = true;
-        graphModel.nodes.get(kbNumber).linkStatus = 'ok';
 
-        // Extract links from current page
+        let initialLabel = title;
+        let initialData = null;
+
+        setLoading(true);
+        try {
+            initialData = await fetchWithRetry(kbId);
+            kbId = initialData.number || kbId;
+            initialLabel = initialData.title;
+        } catch (e) {
+            console.warn('KB Graph: could not fetch initial metadata', e);
+        }
+
+        graphModel.addNode(kbId, initialLabel, 0, 'kb');
+        graphModel.nodes.get(kbId).titleFetched = true;
+        graphModel.nodes.get(kbId).linkStatus = 'ok';
+
         const rawHtml = getArticleOriginalHtml();
         if (rawHtml) {
             const allLinks = extractAllLinks(rawHtml);
-            graphModel.cacheArticleLinks(kbNumber, allLinks);
-            graphModel.fetchCache.set(kbNumber, Promise.resolve({ number: kbNumber, title, html: rawHtml }));
+            graphModel.cacheArticleLinks(kbId, allLinks);
+            graphModel.fetchCache.set(kbId, Promise.resolve({ number: kbId, title: initialLabel, html: rawHtml }));
 
             for (const link of allLinks.kbLinks) {
-                if (link.kb === kbNumber) continue;
+                if (link.kb === kbId) continue;
                 graphModel.addNode(link.kb, link.label, 1, 'kb');
-                graphModel.addLink(kbNumber, link.kb);
+                graphModel.addLink(kbId, link.kb);
             }
             if (graphModel.showExternalLinks) {
-                graphModel.addExternalsForNode(kbNumber, allLinks.externalLinks, 1);
+                graphModel.addExternalsForNode(kbId, allLinks.externalLinks, 1);
             }
-            graphModel.nodes.get(kbNumber).expanded = true;
+            graphModel.nodes.get(kbId).expanded = true;
         }
 
-        // Initialize renderers
-        renderer = new GraphRenderer(panelElements.graphContainer, kbNumber);
+        renderer = new GraphRenderer(panelElements.graphContainer, kbId);
         renderer.initialize();
 
         treeRenderer = new TreeRenderer(panelElements.graphContainer);
         treeRenderer.initialize();
-        treeRenderer.setCentralId(kbNumber);
+        treeRenderer.setCentralId(kbId);
         treeRenderer.onExpand = handleExpand;
         treeRenderer.onOpen = handleOpen;
 
-        // Wire up controls
         panelElements.fitBtn.onclick = function () { renderer.fitToView(); };
         panelElements.resetBtn.onclick = function () { renderer.resetZoom(); };
         panelElements.expandAllBtn.onclick = function () { handleExpandNextLevel(); };
@@ -1787,7 +1795,6 @@
         };
         panelElements.externalLinksCheckbox.onchange = function () { handleToggleExternalLinks(); };
 
-        // Render graph
         renderer.render(
             graphModel.getNodesArray(),
             graphModel.getLinksArray(),
@@ -1799,10 +1806,8 @@
         updateNodeCount();
         initialized = true;
 
-        // Auto fit after simulation settles
         setTimeout(function () { renderer.fitToView(); }, 1500);
 
-        // Batch-fetch titles for depth-1 nodes in background
         graphModel.fetchTitlesForUnexpanded().then(function (updated) {
             if (updated.length > 0) {
                 renderCurrentState();
@@ -1812,6 +1817,7 @@
         if (graphModel.showExternalLinks) {
             checkExternalNodes(graphModel.getExternalNodes());
         }
+        setLoading(false);
     }
 
     async function handleExpand(node) {
@@ -1836,7 +1842,6 @@
                 selectedNode = null;
                 updateNodeCount();
 
-                // Fetch titles for new nodes in background
                 graphModel.fetchTitlesForUnexpanded().then(function (updated) {
                     if (updated.length > 0) {
                         renderCurrentState();
@@ -1866,7 +1871,6 @@
             } else {
                 updateInfo('Error loading ' + node.id + ': ' + e.message);
             }
-            console.error('KB Graph expand error:', e);
         } finally {
             setLoading(false);
         }
@@ -1881,7 +1885,6 @@
         window.open(getNodeOpenUrl(node), '_blank');
     }
 
-    /** Expand next level: fetch all currently-unexpanded visible nodes */
     async function handleExpandNextLevel() {
         if (!graphModel) return;
 
@@ -1913,14 +1916,11 @@
                     setLoading(false);
                     return;
                 }
-                console.warn('KB Graph: could not expand ' + node.id, e.message);
             }
         }
 
-        // Update graph renderer with all new data
         renderCurrentState();
 
-        // Fetch titles for new nodes
         graphModel.fetchTitlesForUnexpanded().then(function (updated) {
             if (updated.length > 0) {
                 renderCurrentState();
@@ -1934,10 +1934,8 @@
         setLoading(false);
     }
 
-    /** Collapse all nodes in tree view */
     function handleCollapseAll() {
         if (!treeRenderer || !graphModel) return;
-        // Add all expanded nodes to the collapsed set
         for (const [id, node] of graphModel.nodes) {
             if (node.type === 'kb' && node.expanded) {
                 treeRenderer.collapsedNodes.add(id);
@@ -1947,8 +1945,6 @@
         treeRenderer.render(graphModel, centralId);
         updateInfo('All nodes collapsed');
     }
-
-    // ─── Toggle Button ───────────────────────────────────────────
 
     function addToggleButton() {
         if (document.getElementById('kb-graph-toggle-btn')) return;
@@ -1988,14 +1984,10 @@
         btn.onclick = async function () {
             showPanel();
             if (!initialized) {
-                setLoading(true);
                 try {
                     await initializeGraph();
                 } catch (e) {
                     updateInfo('Error initializing graph: ' + e.message);
-                    console.error('KB Graph init error:', e);
-                } finally {
-                    setLoading(false);
                 }
             }
         };
@@ -2003,6 +1995,5 @@
         document.body.appendChild(btn);
     }
 
-    // ─── Entry Point ─────────────────────────────────────────────
     setTimeout(addToggleButton, 3000);
 })();

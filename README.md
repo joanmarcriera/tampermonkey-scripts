@@ -10,11 +10,14 @@ A collection of [Tampermonkey](https://www.tampermonkey.net/) userscripts that e
 
 | Script | Description | Version |
 |--------|-------------|---------|
-| [KB Graph View](#-kb-graph-view) | Obsidian-like interactive graph of linked KB articles | 1.2 |
-| [KB Reverse Links](#-kb-reverse-links) | Show which KB articles and tasks reference the current article | 1.0 |
-| [KB Obsidian Export](#-kb-obsidian-export) | Export KB articles to Obsidian-flavoured Markdown | 1.2 |
-| [KB Health Badge](#-kb-health-badge) | Show a quick freshness/ownership health badge for the current article | 1.0 |
-| [KB Link Linter](#-kb-link-linter) | Detect malformed, duplicate, and dead KB links in the current article | 1.0 |
+| [KB Graph View](#-kb-graph-view) | Obsidian-like interactive graph of linked KB articles | 1.3 |
+| [KB Reverse Links](#-kb-reverse-links) | Show which KB articles and tasks reference the current article | 1.2 |
+| [KB Obsidian Export](#-kb-obsidian-export) | Export KB articles to Obsidian-flavoured Markdown | 1.3 |
+| [KB Health Badge](#-kb-health-badge) | Show a quick freshness/ownership health badge for the current article | 1.1 |
+| [KB Link Linter](#-kb-link-linter) | Detect malformed, duplicate, and dead KB links in the current article | 1.1 |
+| [KB Link Preview](#-kb-link-preview) | Hover preview with health status and content snippet | 1.3 |
+| [KB Content Merger](#-kb-content-merger) | Copy clean HTML from linked articles directly in the editor | 1.1 |
+| [KB Thin Content Detector](#-kb-thin-content-detector) | Identify noise, short articles, and dead ends | 1.1 |
 
 ---
 
@@ -52,9 +55,12 @@ Click the raw file link for each script below. Tampermonkey will detect it and o
 
 - [`servicenow-kb-graph-view.user.js`](servicenow/servicenow-kb-graph-view.user.js)
 - [`servicenow-kb-reverse-links.user.js`](servicenow/servicenow-kb-reverse-links.user.js)
-- [`servicenow-to-obisidian-markdown.script`](servicenow/servicenow-to-obisidian-markdown.script)
+- [`servicenow-kb-obsidian-export.user.js`](servicenow/servicenow-kb-obsidian-export.user.js)
 - [`servicenow-kb-health-badge.user.js`](servicenow/servicenow-kb-health-badge.user.js)
 - [`servicenow-kb-link-linter.user.js`](servicenow/servicenow-kb-link-linter.user.js)
+- [`servicenow-kb-link-preview.user.js`](servicenow/servicenow-kb-link-preview.user.js)
+- [`servicenow-kb-content-merger.user.js`](servicenow/servicenow-kb-content-merger.user.js)
+- [`servicenow-kb-thin-content-detector.user.js`](servicenow/servicenow-kb-thin-content-detector.user.js)
 
 > **Note:** For the direct-install to work the file must have a `.user.js` extension and be served as raw content.
 
@@ -144,7 +150,7 @@ Shows which other KB articles and tasks (incidents, catalog tasks, etc.) referen
 
 ### KB Obsidian Export
 
-**File:** [`servicenow/servicenow-to-obisidian-markdown.script`](servicenow/servicenow-to-obisidian-markdown.script)
+**File:** [`servicenow/servicenow-kb-obsidian-export.user.js`](servicenow/servicenow-kb-obsidian-export.user.js)
 
 Exports the current ServiceNow KB article as a clean Markdown file ready for [Obsidian](https://obsidian.md/), with proper `[[wikilinks]]` to other KB articles.
 
@@ -222,6 +228,49 @@ Analyzes links in the current KB article and reports link-quality issues before 
 
 - Table API read access to `kb_knowledge` is needed for dead-link and retired-target checks.
 - If API access is unavailable, structural checks still run and the report shows a validation warning.
+
+---
+
+### KB Link Preview
+
+**File:** [`servicenow/servicenow-kb-link-preview.user.js`](servicenow/servicenow-kb-link-preview.user.js)
+
+Shows a snippet and health status when hovering over KB article links, preventing unnecessary navigation.
+
+#### Features
+
+- **Instant Snippet** — hover over any KB link to see the first 300 characters of the article
+- **Rich Formatting** — preserves bold, italics, and strong tags in the preview
+- **Integrated Health** — shows the "Fresh/Stale" status of the linked article directly in the popup
+- **Smart Positioning** — automatically adjusts popup position to stay within browser bounds
+
+---
+
+### KB Content Merger
+
+**File:** [`servicenow/servicenow-kb-content-merger.user.js`](servicenow/servicenow-kb-content-merger.user.js)
+
+Adds a "Copy Content" button next to KB links in the ServiceNow Knowledge editor to facilitate merging multiple short articles into larger "pillar" articles.
+
+#### Features
+
+- **One-Click Copy** — adds a 📋 button next to all KB links in the editor
+- **Clean HTML Extraction** — fetches and copies the article's `text` field directly to the clipboard
+- **Visual Feedback** — button changes to a green checkmark upon successful copy
+
+---
+
+### KB Thin Content Detector
+
+**File:** [`servicenow/servicenow-kb-thin-content-detector.user.js`](servicenow/servicenow-kb-thin-content-detector.user.js)
+
+Automatically analyzes articles to identify "documentation noise" and navigation dead ends.
+
+#### Features
+
+- **Word Count Scale** — color-coded badges for Critical Noise (<100 words), Very Thin (<200), and Thin (<300)
+- **Dead End Detection** — flags articles that contain no outgoing links to other KB articles
+- **Lean Motivation** — highlights candidates for merging or deletion to keep the Knowledge Base lean
 
 ---
 
