@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ServiceNow KB List Enricher
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.5
+// @version      1.6
 // @description  Enrich KB list view with metrics: in-links, out-links, word count, and malformed links. Handles dynamic Angular content.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*.service-now.com/*
@@ -70,6 +70,7 @@
                 color: #475569;
             }
             .${BADGE_CLASS} .kb-metric-in { color: #4338ca; border-color: #c7d2fe; background: #e0e7ff; }
+            .${BADGE_CLASS} .kb-metric-linked-from { color: #6d28d9; border-color: #c4b5fd; background: #ede9fe; }
             .${BADGE_CLASS} .kb-metric-out { color: #065f46; border-color: #a7f3d0; background: #ecfdf5; }
             .${BADGE_CLASS} .kb-metric-words { color: #92400e; border-color: #fde68a; background: #fffbeb; }
             .${BADGE_CLASS} .kb-metric-broken { color: #991b1b; border-color: #fecaca; background: #fef2f2; }
@@ -146,10 +147,28 @@
             }
         }
 
-        return { articles: allArticles, links: allLinks };
+        // Fetch "linked from" counts — how many other articles' body HTML links to each article
+        const linkedFromCounts = {};
+        for (const chunk of sysIdChunks) {
+            for (const sysId of chunk) {
+                try {
+                    const lfQuery = 'textLIKE' + sysId + '^sys_id!=' + sysId;
+                    const url = `${window.location.origin}/api/now/stats/kb_knowledge?sysparm_query=${encodeURIComponent(lfQuery)}&sysparm_count=true`;
+                    const resp = await fetch(url, { headers });
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        linkedFromCounts[sysId] = parseInt(data.result.stats.count, 10) || 0;
+                    }
+                } catch (e) {
+                    // Non-critical — skip silently
+                }
+            }
+        }
+
+        return { articles: allArticles, links: allLinks, linkedFromCounts };
     }
 
-    function processArticle(article, allRels) {
+    function processArticle(article, allRels, linkedFromCounts) {
         const temp = document.createElement('div');
         temp.innerHTML = article.text || ''; // Safe: parsing ServiceNow API response in detached element
 
@@ -178,7 +197,9 @@
             return (fromId === article.sys_id || toId === article.sys_id);
         }).length;
 
-        return { wordCount, outLinks, inLinks, brokenLinks };
+        const linkedFrom = linkedFromCounts[article.sys_id] || 0;
+
+        return { wordCount, outLinks, inLinks, linkedFrom, brokenLinks };
     }
 
     function extractIdFromLink(a) {
@@ -206,11 +227,13 @@
         badge.className = BADGE_CLASS;
         const wordClass = metrics.wordCount < CONFIG.THIN_CONTENT_THRESHOLD ? 'critical' : '';
 
-        const inSpan = Object.assign(document.createElement('span'), { className: 'kb-metric-in', title: 'Incoming links (explicit)', textContent: '\u{1F4E5} ' + metrics.inLinks });
+        const inSpan = Object.assign(document.createElement('span'), { className: 'kb-metric-in', title: 'Incoming links (explicit relationships)', textContent: '\u{1F4E5} ' + metrics.inLinks });
+        const linkedFromSpan = Object.assign(document.createElement('span'), { className: 'kb-metric-linked-from', title: 'Linked from other articles (hyperlinks in body)', textContent: '\u{1F517} ' + metrics.linkedFrom });
         const outSpan = Object.assign(document.createElement('span'), { className: 'kb-metric-out', title: 'Outgoing KB links', textContent: '\u{1F4E4} ' + metrics.outLinks });
         const wordSpan = Object.assign(document.createElement('span'), { className: 'kb-metric-words ' + wordClass, title: 'Word count', textContent: '\u{1F4DD} ' + metrics.wordCount });
 
         badge.appendChild(inSpan);
+        badge.appendChild(linkedFromSpan);
         badge.appendChild(outSpan);
         badge.appendChild(wordSpan);
 
@@ -268,7 +291,7 @@
             console.log('KB Enricher: Fetched data for ' + data.articles.length + ' articles.');
 
             data.articles.forEach(article => {
-                const metrics = processArticle(article, data.links);
+                const metrics = processArticle(article, data.links, data.linkedFromCounts);
                 const targets = (idMap.get(article.sys_id) || []).concat(idMap.get(article.number) || []);
                 if (targets.length === 0) return;
 
