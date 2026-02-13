@@ -118,7 +118,13 @@
         });
     }
 
-    // Run periodically to catch dynamic links
+    // Watch for dynamic links instead of polling every 3s
     ensureStyles();
-    setInterval(addButtons, 3000);
+    let addButtonsTimer = null;
+    const observer = new MutationObserver(() => {
+        clearTimeout(addButtonsTimer);
+        addButtonsTimer = setTimeout(addButtons, 500);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    setTimeout(addButtons, 3000);
 })();
