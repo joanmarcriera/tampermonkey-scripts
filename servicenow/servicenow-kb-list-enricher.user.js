@@ -1,10 +1,16 @@
 // ==UserScript==
 // @name         ServiceNow KB List Enricher
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.6
+// @version      1.7
 // @description  Enrich KB list view with metrics: in-links, out-links, word count, and malformed links. Handles dynamic Angular content.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
-// @match        *://*.service-now.com/*
+// @match        *://*/$knowledge.do*
+// @match        *://*/%24knowledge.do*
+// @match        *://*/kb_knowledge_home.do*
+// @match        *://*/kb_home.do*
+// @match        *://*/kb_find.do*
+// @match        *://*/now/nav/ui/classic/params/target/%24knowledge.do*
+// @match        *://*/now/nav/ui/classic/params/target/$knowledge.do*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-list-enricher.user.js
 // @downloadURL  https://raw.githubusercontent.com/joanmarcriera/tampermonkey-scripts/main/servicenow/servicenow-kb-list-enricher.user.js
@@ -13,12 +19,13 @@
 (function () {
     'use strict';
 
-    // Only run on KB-related pages (direct or inside iframe)
-    const href = window.location.href;
-    const isKBPage = /(\$|%24)knowledge\.do|kb_knowledge_home\.do|kb_home\.do|kb_find\.do/.test(href);
-    const isNavWrapper = /\/now\/nav\/ui\/classic\/.*knowledge/i.test(href);
-
-    if (!isKBPage && !isNavWrapper) return;
+    // Skip the outer navigation wrapper — we only want to run inside the iframe
+    // where the actual KB links live. The @match patterns ensure Tampermonkey
+    // injects us into both, but only the iframe has useful content.
+    if (/\/now\/nav\/ui\//.test(window.location.pathname)) {
+        console.log('KB Enricher: Skipping outer navigation wrapper.');
+        return;
+    }
 
     console.log('KB Enricher: Script loaded on ' + window.location.href);
 
