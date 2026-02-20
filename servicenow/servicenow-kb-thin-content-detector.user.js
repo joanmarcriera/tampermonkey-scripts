@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         ServiceNow KB Thin Content Detector
+// @name         ServiceNow KB Content Quality Checker
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.1
-// @description  Detects "thin" articles and "dead ends" (no outgoing links) to help lean out documentation. Supports ESC Portal.
+// @version      1.2
+// @description  Detects thin content, missing Table of Contents, and readability grade levels. Supports ESC Portal.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_view.do*
 // @match        *://*/kb_article.do*
@@ -29,7 +29,11 @@
         warning: { bg: '#ffedd5', fg: '#c2410c', border: '#fed7aa', label: 'Very Thin' },
         thin: { bg: '#fef9c3', fg: '#a16207', border: '#fef08a', label: 'Thin Content' },
         good: { bg: '#dcfce7', fg: '#15803d', border: '#bbf7d0', label: 'Good Length' },
-        deadEnd: { bg: '#f3e8ff', fg: '#7e22ce', border: '#e9d5ff', label: 'Dead End' }
+        deadEnd: { bg: '#f3e8ff', fg: '#7e22ce', border: '#e9d5ff', label: 'Dead End' },
+        missingToc: { bg: '#fee2e2', fg: '#b91c1c', border: '#fecaca', label: 'Missing ToC' },
+        simple: { bg: '#dcfce7', fg: '#15803d', border: '#bbf7d0', label: 'Simple' },
+        average: { bg: '#fef9c3', fg: '#a16207', border: '#fef08a', label: 'Average' },
+        complex: { bg: '#ffedd5', fg: '#c2410c', border: '#fed7aa', label: 'Complex' }
     };
 
     function getArticleContent() {
@@ -55,6 +59,40 @@
         temp.innerHTML = html;
         const text = temp.innerText || temp.textContent || '';
         return text.trim().split(/\s+/).filter(word => word.length > 0).length;
+    }
+
+    function getPlainText(html) {
+        const temp = document.createElement('div');
+        temp.innerHTML = html;
+        return temp.innerText || temp.textContent || '';
+    }
+
+    function hasNativeToc(html) {
+        return html.includes('id="toc"') || html.includes('class="kb-toc"') || html.includes('class="snc-kb-toc"');
+    }
+
+    function calculateReadability(html) {
+        const text = getPlainText(html);
+        const words = text.trim().split(/\s+/).filter(word => word.length > 0);
+        const wordCount = words.length;
+        if (wordCount === 0) return 0;
+
+        const sentenceCount = text.split(/[.!?]+/).filter(s => s.trim().length > 0).length || 1;
+
+        let syllableCount = 0;
+        words.forEach(word => {
+            word = word.toLowerCase().replace(/[^a-z]/g, '');
+            if (word.length <= 3) syllableCount += 1;
+            else {
+                word = word.replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/, '');
+                word = word.replace(/^y/, '');
+                const syllables = word.match(/[aeiouy]{1,2}/g);
+                syllableCount += syllables ? syllables.length : 1;
+            }
+        });
+
+        // Flesch-Kincaid Grade Level
+        return 0.39 * (wordCount / sentenceCount) + 11.8 * (syllableCount / wordCount) - 15.59;
     }
 
     function hasOutgoingKbLinks(html) {
@@ -119,11 +157,17 @@
 
         const wordCount = countWords(content);
         const isDeadEnd = !hasOutgoingKbLinks(content);
+        const hasToc = hasNativeToc(content);
+        const gradeLevel = calculateReadability(content);
 
         let status = COLORS.good;
         if (wordCount < CONFIG.critical) status = COLORS.critical;
         else if (wordCount < CONFIG.warning) status = COLORS.warning;
         else if (wordCount < CONFIG.thin) status = COLORS.thin;
+
+        let readabilityStatus = COLORS.simple;
+        if (gradeLevel > 12) readabilityStatus = COLORS.complex;
+        else if (gradeLevel > 8) readabilityStatus = COLORS.average;
 
         ensureStyles();
         let badge = document.getElementById(BADGE_ID);
@@ -138,7 +182,20 @@
                 <span class="kb-thin-value">Word Count: ${wordCount}</span>
                 <span class="kb-thin-label" style="background:${status.bg}; color:${status.fg}; border:1px solid ${status.border}">${status.label}</span>
             </div>
+            <div class="kb-thin-row">
+                <span class="kb-thin-value">Readability (Grade): ${gradeLevel.toFixed(1)}</span>
+                <span class="kb-thin-label" style="background:${readabilityStatus.bg}; color:${readabilityStatus.fg}; border:1px solid ${readabilityStatus.border}">${readabilityStatus.label}</span>
+            </div>
         `;
+
+        if (wordCount > 500 && !hasToc) {
+            html += `
+                <div class="kb-thin-row">
+                    <span class="kb-thin-value">Structure:</span>
+                    <span class="kb-thin-label" style="background:${COLORS.missingToc.bg}; color:${COLORS.missingToc.fg}; border:1px solid ${COLORS.missingToc.border}">${COLORS.missingToc.label}</span>
+                </div>
+            `;
+        }
 
         if (isDeadEnd) {
             html += `
