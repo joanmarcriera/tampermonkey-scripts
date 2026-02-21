@@ -321,8 +321,4 @@ Enriches the Knowledge Base home page and search results with live metrics for e
 
 ---
 
-## License
-
-These scripts are provided as-is for personal use.
-
-**Author:** [Joan Marc Riera](https://www.linkedin.com/in/joanmarcriera/)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
