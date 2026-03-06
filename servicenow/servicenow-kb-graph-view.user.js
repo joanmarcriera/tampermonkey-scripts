@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ServiceNow KB Graph View
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.3
+// @version      1.4
 // @description  Obsidian-like graph visualization of linked ServiceNow Knowledge Base articles. Supports ESC Portal.
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://*/kb_view.do*
@@ -93,6 +93,43 @@
         const t = (!title || title === id) ? '' : title;
         if (!t) return id;
         return id + ' - ' + truncate(t, 30);
+    }
+
+    function extractRecordDisplayValue(value) {
+        if (!value) return '';
+        if (typeof value === 'string') return value.trim();
+        if (typeof value === 'object') {
+            if (typeof value.display_value === 'string' && value.display_value.trim()) return value.display_value.trim();
+            if (typeof value.name === 'string' && value.name.trim()) return value.name.trim();
+            if (typeof value.value === 'string' && value.value.trim()) return value.value.trim();
+        }
+        return '';
+    }
+
+    function formatMetaDate(dateValue) {
+        const raw = (dateValue || '').trim();
+        if (!raw) return '';
+        const m = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+        if (m) return m[1];
+        const d = new Date(raw);
+        if (Number.isNaN(d.getTime())) return '';
+        return d.toISOString().slice(0, 10);
+    }
+
+    function buildNodeMetaText(node) {
+        if (!node || node.type !== 'kb' || !node.meta) return '';
+        const parts = [];
+        if (node.meta.author) parts.push('Author: ' + node.meta.author);
+
+        let updatedPart = '';
+        if (node.meta.updatedBy) updatedPart = 'Updated by: ' + node.meta.updatedBy;
+        const updatedDate = formatMetaDate(node.meta.updatedOn);
+        if (updatedDate) {
+            updatedPart = updatedPart ? (updatedPart + ' (' + updatedDate + ')') : ('Updated: ' + updatedDate);
+        }
+        if (updatedPart) parts.push(updatedPart);
+
+        return truncate(parts.join(' \u2022 '), 120);
     }
 
     function clearChildren(el) {
@@ -360,7 +397,18 @@
     async function fetchKbArticle(id) {
         const base = window.location.origin;
         let query = id.startsWith('KB') ? `number=${encodeURIComponent(id)}` : `sys_id=${encodeURIComponent(id)}`;
-        const url = `${base}/api/now/table/kb_knowledge?sysparm_query=${query}&sysparm_fields=sys_id,number,short_description,text&sysparm_limit=1`;
+        const fields = [
+            'sys_id',
+            'number',
+            'short_description',
+            'text',
+            'author',
+            'author.name',
+            'sys_created_by',
+            'sys_updated_by',
+            'sys_updated_on',
+        ].join(',');
+        const url = `${base}/api/now/table/kb_knowledge?sysparm_query=${query}&sysparm_fields=${encodeURIComponent(fields)}&sysparm_limit=1`;
 
         const resp = await fetch(url, {
             headers: {
@@ -383,11 +431,22 @@
         }
 
         const article = data.result[0];
+        const author = extractRecordDisplayValue(article['author.name']) ||
+            extractRecordDisplayValue(article.author) ||
+            extractRecordDisplayValue(article.sys_created_by);
+        const updatedBy = extractRecordDisplayValue(article.sys_updated_by);
+        const updatedOn = extractRecordDisplayValue(article.sys_updated_on);
+
         return {
             number: article.number,
             title: article.short_description || article.number || id,
             html: article.text || '',
-            sysId: article.sys_id
+            sysId: article.sys_id,
+            meta: {
+                author: author,
+                updatedBy: updatedBy,
+                updatedOn: updatedOn,
+            },
         };
     }
 
@@ -418,7 +477,7 @@
             this.showExternalLinks = false;
         }
 
-        addNode(id, label, depth = 0, type = 'kb', url = null, category = null) {
+        addNode(id, label, depth = 0, type = 'kb', url = null, category = null, meta = null) {
             if (this.nodes.has(id)) {
                 const existing = this.nodes.get(id);
                 if ((!existing.label || existing.label === existing.id || existing.label === existing.url) && label) {
@@ -428,6 +487,9 @@
                 if (!existing.type) existing.type = type;
                 if (!existing.url && url) existing.url = url;
                 if (!existing.category && category) existing.category = category;
+                if ((!existing.meta || (!existing.meta.author && !existing.meta.updatedBy && !existing.meta.updatedOn)) && meta) {
+                    existing.meta = meta;
+                }
                 return existing;
             }
             const node = {
@@ -440,6 +502,7 @@
                 url,
                 category,
                 linkStatus: 'unknown',
+                meta,
             };
             this.nodes.set(id, node);
             return node;
@@ -539,6 +602,7 @@
                 node.label = articleData.title;
                 node.titleFetched = true;
             }
+            if (articleData.meta) node.meta = articleData.meta;
 
             const allLinks = extractAllLinks(articleData.html || '');
             const kbLinks = allLinks.kbLinks;
@@ -597,11 +661,14 @@
                         const oldStatus = node.linkStatus;
                         node.linkStatus = 'ok';
                         const oldLabel = node.label;
+                        const oldMetaKey = JSON.stringify(node.meta || {});
                         if (articleData.title && articleData.title !== kbNumber) {
                             node.label = articleData.title;
                         }
+                        if (articleData.meta) node.meta = articleData.meta;
                         node.titleFetched = true;
-                        if (node.label !== oldLabel || node.linkStatus !== oldStatus) {
+                        const newMetaKey = JSON.stringify(node.meta || {});
+                        if (node.label !== oldLabel || node.linkStatus !== oldStatus || oldMetaKey !== newMetaKey) {
                             updated.push(kbNumber);
                         }
                     }
@@ -1199,9 +1266,17 @@
             }
             row.appendChild(dot);
 
+            const labelWrap = document.createElement('div');
+            Object.assign(labelWrap.style, {
+                flex: '1',
+                minWidth: '0',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1px',
+            });
+
             const label = document.createElement('span');
             Object.assign(label.style, {
-                flex: '1',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -1211,7 +1286,23 @@
                 label.style.fontStyle = 'italic';
                 label.style.opacity = '0.7';
             }
-            row.appendChild(label);
+            labelWrap.appendChild(label);
+
+            const metaText = buildNodeMetaText(node);
+            if (metaText) {
+                const meta = document.createElement('span');
+                meta.textContent = metaText;
+                Object.assign(meta.style, {
+                    color: COLORS.textSecondary,
+                    fontSize: '11px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                });
+                labelWrap.appendChild(meta);
+            }
+
+            row.appendChild(labelWrap);
             this._appendStatusIcon(row, node);
 
             if (isDuplicate && prevParents.length > 0) {
@@ -1623,6 +1714,14 @@
                     area.appendChild(status);
                 }
             }
+
+            const metaText = buildNodeMetaText(linkNode);
+            if (metaText) {
+                const meta = document.createElement('span');
+                meta.textContent = ' \u2022 ' + metaText;
+                meta.style.color = COLORS.textSecondary;
+                area.appendChild(meta);
+            }
         } else {
             area.textContent = text;
         }
@@ -1756,7 +1855,7 @@
             console.warn('KB Graph: could not fetch initial metadata', e);
         }
 
-        graphModel.addNode(kbId, initialLabel, 0, 'kb');
+        graphModel.addNode(kbId, initialLabel, 0, 'kb', null, null, initialData ? initialData.meta : null);
         graphModel.nodes.get(kbId).titleFetched = true;
         graphModel.nodes.get(kbId).linkStatus = 'ok';
 

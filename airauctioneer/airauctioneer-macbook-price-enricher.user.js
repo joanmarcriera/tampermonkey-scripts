@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AirAuctioneer MacBook Price Enricher
 // @namespace    https://www.linkedin.com/in/joanmarcriera/
-// @version      1.0
+// @version      1.2
 // @description  Shows estimated market value and specs for MacBook items on AirAuctioneer auction pages
 // @author       Joan Marc Riera (https://www.linkedin.com/in/joanmarcriera/)
 // @match        *://airauctioneer.com/*
@@ -16,6 +16,8 @@
     const ENRICHED_CLASS = 'macbook-price-enriched';
     const BADGE_CLASS = 'macbook-price-badge';
     const STYLE_ID = 'macbook-price-style';
+    const ENRICHED_KEY_ATTR = 'data-mp-enriched-key';
+    const PROCESSING_KEY_ATTR = 'data-mp-processing-key';
 
     // Estimated UK market prices (GBP) as of Feb 2026.
     // Format: 'model-key': { 'RAM_GB-SSD_GB': [low, high] }
@@ -148,9 +150,27 @@
         document.head.appendChild(style);
     }
 
+    function stripLotPrefix(titleText) {
+        return titleText.replace(/#\d+\s*/, '').trim();
+    }
+
+    function normalizeTitleText(text) {
+        return text
+            .toLowerCase()
+            // Normalize common misspellings/variants such as "Mackbook" and "Mac Book".
+            .replace(/\bmac(?:k)?\s*book\b/g, 'macbook')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function getItemKey(item, titleText) {
+        const entityId = item.getAttribute('data-entity-id') || item.id || '';
+        return `${entityId}|${normalizeTitleText(stripLotPrefix(titleText))}`;
+    }
+
     // Parse model key from title text, e.g. "#001 MacBook Pro 13-inch Retina (Mid 2017)" -> "macbook-pro-13-2017"
     function parseModelFromTitle(titleText) {
-        const clean = titleText.replace(/#\d+\s*/, '').trim().toLowerCase();
+        const clean = normalizeTitleText(stripLotPrefix(titleText));
 
         let family = 'macbook';
         if (/macbook\s*pro/.test(clean)) family = 'macbook-pro';
@@ -211,7 +231,10 @@
     }
 
     function buildSearchQuery(titleText) {
-        return titleText.replace(/#\d+\s*/, '').trim();
+        return stripLotPrefix(titleText)
+            .replace(/\bmac(?:k)?\s*book\b/ig, 'MacBook')
+            .replace(/\s+/g, ' ')
+            .trim();
     }
 
     function buildBackMarketUrl(titleText) {
@@ -307,7 +330,7 @@
     }
 
     function isMacBook(titleText) {
-        return /macbook/i.test(titleText);
+        return normalizeTitleText(titleText).includes('macbook');
     }
 
     async function enrichItem(item) {
@@ -317,20 +340,36 @@
         const titleText = titleEl.textContent.replace(/\s+/g, ' ').trim();
         if (!isMacBook(titleText)) return;
 
+        const itemKey = getItemKey(item, titleText);
+        if (item.getAttribute(ENRICHED_KEY_ATTR) === itemKey) return;
+        if (item.getAttribute(PROCESSING_KEY_ATTR) === itemKey) return;
+        item.setAttribute(PROCESSING_KEY_ATTR, itemKey);
+
         item.classList.add(ENRICHED_CLASS);
         const modelKey = parseModelFromTitle(titleText);
+        try {
+            const insertTarget = item.querySelector('.c-node-ai__details-wrap') || item.querySelector('.c-node-ai__content') || titleEl.parentElement;
+            if (!insertTarget) return;
 
-        // Insert loading badge
-        const badge = createLoadingBadge();
-        const insertTarget = item.querySelector('.c-node-ai__details-wrap') || item.querySelector('.c-node-ai__content') || titleEl.parentElement;
-        insertTarget.appendChild(badge);
+            // Item cards can be recycled by the page; replace any old badge before adding a new one.
+            const existing = insertTarget.querySelector('.' + BADGE_CLASS);
+            if (existing) existing.remove();
 
-        // Fetch specs from detail page
-        const detailUrl = titleEl.href;
-        const specs = await fetchSpecs(detailUrl);
+            const badge = createLoadingBadge();
+            insertTarget.appendChild(badge);
 
-        updateBadge(badge, titleText, specs, modelKey);
-        console.log('MacBook Price Enricher:', titleText, modelKey, specs);
+            // Fetch specs from detail page
+            const detailUrl = titleEl.href;
+            const specs = await fetchSpecs(detailUrl);
+
+            updateBadge(badge, titleText, specs, modelKey);
+            item.setAttribute(ENRICHED_KEY_ATTR, itemKey);
+            console.log('MacBook Price Enricher:', titleText, modelKey, specs);
+        } finally {
+            if (item.getAttribute(PROCESSING_KEY_ATTR) === itemKey) {
+                item.removeAttribute(PROCESSING_KEY_ATTR);
+            }
+        }
     }
 
     // Also enrich the full/detail view if we're on a MacBook detail page
@@ -344,6 +383,9 @@
         const titleText = titleEl.textContent.replace(/\s+/g, ' ').trim();
         if (!isMacBook(titleText)) return;
 
+        const itemKey = getItemKey(fullItem, titleText);
+        if (fullItem.getAttribute(ENRICHED_KEY_ATTR) === itemKey) return;
+
         fullItem.classList.add(ENRICHED_CLASS);
         const modelKey = parseModelFromTitle(titleText);
 
@@ -353,53 +395,91 @@
         const descText = (descEl ? descEl.textContent : '') || (metaDesc ? metaDesc.content : '');
         const specs = parseSpecs(descText);
 
+        const aboutSection = fullItem.querySelector('.c-node-ai__about') || titleEl.parentElement;
+        const existing = aboutSection.querySelector('.' + BADGE_CLASS);
+        if (existing) existing.remove();
+
         const badge = document.createElement('div');
         badge.className = BADGE_CLASS;
-
-        const aboutSection = fullItem.querySelector('.c-node-ai__about') || titleEl.parentElement;
         aboutSection.appendChild(badge);
 
         updateBadge(badge, titleText, specs, modelKey);
+        fullItem.setAttribute(ENRICHED_KEY_ATTR, itemKey);
     }
 
+    let isEnriching = false;
+    let pendingEnrich = false;
+
     async function enrichAll() {
+        if (isEnriching) {
+            pendingEnrich = true;
+            return;
+        }
+        isEnriching = true;
         ensureStyles();
 
-        // Enrich detail page if applicable
-        enrichDetailPage();
+        try {
+            // Enrich detail page if applicable
+            await enrichDetailPage();
 
-        // Enrich list/teaser items
-        const items = document.querySelectorAll('.c-node-ai--small-teaser:not(.' + ENRICHED_CLASS + '), .c-node-ai--teaser-view:not(.' + ENRICHED_CLASS + ')');
-        const macbooks = [];
-        items.forEach(item => {
-            const titleEl = item.querySelector('h3.c-node-ai__title a, .c-node-ai__title a');
-            if (titleEl && isMacBook(titleEl.textContent)) {
+            // Enrich list/teaser items (scan all candidates so dynamically revealed cards are picked up)
+            const items = document.querySelectorAll('.c-node-ai--small-teaser, .c-node-ai--teaser-view');
+            const macbooks = [];
+            items.forEach(item => {
+                const titleEl = item.querySelector('h3.c-node-ai__title a, .c-node-ai__title a');
+                if (!titleEl) return;
+
+                const titleText = titleEl.textContent.replace(/\s+/g, ' ').trim();
+                if (!isMacBook(titleText)) return;
+
+                const itemKey = getItemKey(item, titleText);
+                if (item.getAttribute(ENRICHED_KEY_ATTR) === itemKey) return;
+                if (item.getAttribute(PROCESSING_KEY_ATTR) === itemKey) return;
+
                 macbooks.push(item);
+            });
+
+            if (macbooks.length === 0) return;
+            console.log('MacBook Price Enricher: Found ' + macbooks.length + ' MacBook items to enrich.');
+
+            // Process sequentially to avoid hammering the server
+            for (const item of macbooks) {
+                await enrichItem(item);
             }
-        });
-
-        if (macbooks.length === 0) return;
-        console.log('MacBook Price Enricher: Found ' + macbooks.length + ' MacBook items to enrich.');
-
-        // Process sequentially to avoid hammering the server
-        for (const item of macbooks) {
-            await enrichItem(item);
+        } finally {
+            isEnriching = false;
+            if (pendingEnrich) {
+                pendingEnrich = false;
+                setTimeout(enrichAll, 200);
+            }
         }
+    }
+
+    function scheduleEnrich(delayMs) {
+        setTimeout(enrichAll, delayMs);
     }
 
     // Run after page loads
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => setTimeout(enrichAll, 1000));
+        document.addEventListener('DOMContentLoaded', () => scheduleEnrich(1000));
     } else {
-        setTimeout(enrichAll, 1000);
+        scheduleEnrich(1000);
     }
 
-    // Watch for dynamic content (AJAX navigation)
+    // Watch for dynamic content (AJAX navigation, "load more", and visibility/class toggles)
     let debounceTimer = null;
     const observer = new MutationObserver(() => {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(enrichAll, 1500);
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-entity-id']
+    });
+
+    // Safety net: keep scanning in case the page reveals items without triggering useful mutations.
+    setInterval(() => scheduleEnrich(0), 5000);
 
 })();
